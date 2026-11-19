@@ -13,6 +13,8 @@ bngsim tree's tests in one.
     python bngsim_docker.py compare --tree ~/work/branch --main ~/work/main
     python bngsim_docker.py shell --tree ~/work/bngsim
     python bngsim_docker.py test --tree . --dry-run     # print the commands, run nothing
+    python bngsim_docker.py clean                       # remove the compiler caches
+    python bngsim_docker.py clean --images              # and the images
 
 Three images (`--kind`):
 - debian (default): Debian 12, the image bngsim-preflights' linux_check runs;
@@ -39,11 +41,17 @@ its main, recompiles only what changed. `--no-ccache` builds from scratch.
 Desktop on macOS can answer `docker info` and start no container. `doctor`
 then quits Docker Desktop by its full name, stops its backend, opens it again,
 and probes once more.
+
+`clean` lists what this tool made, with sizes: the cache volumes and the
+images. It removes the caches, and the images too with `--images`; with
+`--dry-run` it lists them and removes nothing. Volumes and images of other
+names are not touched.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform as host_platform
 import re
@@ -61,6 +69,7 @@ IMAGES = ROOT / "images"
 KNOWN = ROOT / "known-failures.txt"
 EXCLUDE = (".venv", "build", ".git", "*.log", "__pycache__", ".pytest_cache", ".mutate-backup", "*.so")
 KINDS = ("debian", "ubuntu", "bionetgen")
+ARCHES = ("amd64", "arm64")
 DOCKERFILE = {"debian": "Dockerfile", "ubuntu": "Dockerfile.ubuntu", "bionetgen": "Dockerfile.bionetgen"}
 
 
@@ -297,11 +306,61 @@ def cmd_compare(a: argparse.Namespace) -> int:
     return 1 if only else 0
 
 
+
+def made_here() -> tuple[set[str], set[str]]:
+    """(the cache volumes, the image repositories) this tool names: nothing else
+    is ever removed by `clean`."""
+    pairs = [(k, a) for k in KINDS for a in ARCHES if not (k == "bionetgen" and a != "amd64")]
+    return ({ccache_volume(a, k) for k, a in pairs},
+            {image_name(a, k).rsplit(":", 1)[0] for k, a in pairs})
+
+
+def docker_out(cmd: list[str]) -> str:
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"{' '.join(cmd)}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def find_made_here() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """([(volume, size)], [(image:tag, size)]) of what exists now. The BioNetGen
+    image comes first: it is built on the Debian one."""
+    volumes, repos = made_here()
+    df = json.loads(docker_out(["docker", "system", "df", "-v", "--format", "{{json .Volumes}}"]) or "[]")
+    vols = sorted((v["Name"], v.get("Size", "?")) for v in df or [] if v.get("Name") in volumes)
+    imgs = []
+    for row in docker_out(["docker", "images", "--format", "{{.Repository}}|{{.Tag}}|{{.Size}}"]).splitlines():
+        repo, tag, size = (row.split("|") + ["", ""])[:3]
+        if repo in repos and tag != "<none>":
+            imgs.append((f"{repo}:{tag}", size))
+    imgs.sort(key=lambda t: ("bionetgen" not in t[0], t[0]))
+    return vols, imgs
+
+
+def cmd_clean(a: argparse.Namespace) -> int:
+    vols, imgs = find_made_here()
+    if not vols and not imgs:
+        print("nothing of bngsim-docker's to remove")
+        return 0
+    for name, size in vols:
+        print(f"volume  {name}  {size}")
+    for name, size in imgs:
+        print(f"image   {name}  {size}" + ("" if a.images else "  (kept; --images removes it)"))
+    rc = 0
+    for kind, names in (("volume", [n for n, _ in vols]), ("image", [n for n, _ in imgs] if a.images else [])):
+        if names:
+            r = sh(["docker", kind, "rm", *names], dry=a.dry_run)
+            if r.returncode != 0:
+                print(r.stderr.strip(), file=sys.stderr)
+                rc = 1
+    return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--arch", choices=["amd64", "arm64"], default="amd64")
+    common.add_argument("--arch", choices=ARCHES, default="amd64")
     common.add_argument("--kind", choices=KINDS, default="debian",
                         help="debian (default), ubuntu (as bngsim's CI) or bionetgen")
     common.add_argument("--dry-run", action="store_true", help="print the commands; run nothing")
@@ -331,6 +390,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--timeout", type=float, default=5400, help="seconds for each run")
         if name == "test":
             p.add_argument("--known", type=Path, default=KNOWN, help="the standing failures")
+    p = sub.add_parser("clean", help="remove the compiler caches (and, with --images, the images)")
+    p.add_argument("--images", action="store_true", help="remove the images too")
+    p.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
     a = ap.parse_args(argv)
 
     if a.cmd == "build":
@@ -354,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_test(a)
     if a.cmd == "compare":
         return cmd_compare(a)
+    if a.cmd == "clean":
+        return cmd_clean(a)
     # shell
     image = a.image or image_name(a.arch, a.kind)
     with tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch:

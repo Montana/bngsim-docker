@@ -72,6 +72,10 @@ python bngsim_docker.py test --tree ~/work/bngsim --tests python/tests/test_x.py
 python bngsim_docker.py test --tree ~/work/bngsim --kind ubuntu
 python bngsim_docker.py compare --tree ~/work/branch --main ~/work/main
 python bngsim_docker.py shell --tree ~/work/bngsim   # a shell, the tree copied to /src
+
+python bngsim_docker.py clean --dry-run              # what clean would remove, with sizes
+python bngsim_docker.py clean                        # remove the compiler caches
+python bngsim_docker.py clean --images               # and the images
 ```
 
 ## Commands
@@ -84,8 +88,9 @@ python bngsim_docker.py shell --tree ~/work/bngsim   # a shell, the tree copied 
 | `test` | copies the tree in, builds it, runs pytest, sorts failures against [`known-failures.txt`](known-failures.txt) | 1 if a failure is not listed, or the run did not finish |
 | `compare` | runs the tree's tests, then runs each failure again on a main checkout in the same image | 1 if a failure is the branch's only, or a run did not finish |
 | `shell` | an interactive shell, the tree copied to `/src` | the shell's |
+| `clean` | lists the cache volumes and images this tool makes, with their sizes, and removes the caches (`--images`: the images too). Volumes and images of other names are left alone | 1 if Docker refuses one, such as a volume a running container uses |
 
-Flags shared by every command:
+Flags shared by every command but `clean` (which takes only `--images` and `--dry-run`):
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -173,7 +178,7 @@ Measured on an Apple Silicon Mac, `bngsim-linux-amd64` under emulation, bngsim m
 | `bngsim-ccache-ubuntu-amd64` | `--kind ubuntu`, `suite-ubuntu` |
 | `bngsim-ccache-bionetgen-amd64` | `--kind bionetgen`, `suite-bionetgen` |
 
-The CLI and Compose use the same names, so they fill the same cache. The images' compilers differ, so each has its own. `--no-ccache` builds without it. `docker volume rm bngsim-ccache-debian-amd64` empties one, and the cache caps itself at 3 GB.
+The CLI and Compose use the same names, so they fill the same cache. The images' compilers differ, so each has its own. `--no-ccache` builds without it. `docker volume rm bngsim-ccache-debian-amd64` empties one, `clean` empties them all, and the cache caps itself at 3 GB.
 
 ## Failures that are the container's
 

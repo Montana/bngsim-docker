@@ -4,6 +4,7 @@ Docker needed (pure functions and --dry-run)."""
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -223,3 +224,68 @@ def test_the_cache_s_count_is_read_from_the_build_log(tmp_path):
     assert bd.cache_line(tmp_path) is None
     (tmp_path / "build.log").write_text("Building\nccache: 0 of 212 compiles from the cache\nBuilt\n")
     assert bd.cache_line(tmp_path) == "ccache: 0 of 212 compiles from the cache"
+
+
+# ── clean ───────────────────────────────────────────────────────────────────
+
+DF = ('[{"Name": "bngsim-ccache-debian-amd64", "Size": "38MB"}, {"Name": "bngsim-ccache-mine", "Size": "1GB"},'
+      ' {"Name": "bngsim-ccache-ubuntu-amd64", "Size": "33MB"}, {"Name": "pgdata", "Size": "2GB"}]')
+IMAGES_OUT = ("bngsim-linux-amd64|latest|1.16GB\nbngsim-linux-bionetgen|candidate|1.17GB\n"
+              "bngsim-linux-amd64|<none>|1.1GB\nbngsim-linux-other|latest|5MB\npostgres|16|400MB\n")
+
+
+def _clean(monkeypatch, capsys, *args, df=DF, images=IMAGES_OUT, rm_rc=0):
+    """clean, with docker's listings stood in for and every rm recorded."""
+    removed = []
+    monkeypatch.setattr(bd, "docker_out", lambda cmd: df if "df" in cmd else images)
+
+    def sh(cmd, *, dry, **k):
+        print("+ " + " ".join(cmd))
+        if not dry:
+            removed.append(cmd)
+        return bd.subprocess.CompletedProcess(cmd, rm_rc, "", "in use" if rm_rc else "")
+
+    monkeypatch.setattr(bd, "sh", sh)
+    rc = bd.main(["clean", *args])
+    return rc, removed, capsys.readouterr().out
+
+
+def test_every_name_clean_may_remove_is_one_the_tool_makes():
+    volumes, repos = bd.made_here()
+    assert volumes == {"bngsim-ccache-debian-amd64", "bngsim-ccache-debian-arm64", "bngsim-ccache-ubuntu-amd64",
+                       "bngsim-ccache-ubuntu-arm64", "bngsim-ccache-bionetgen-amd64"}
+    assert repos == {"bngsim-linux-amd64", "bngsim-linux-arm64", "bngsim-linux-ubuntu",
+                     "bngsim-linux-ubuntu-arm64", "bngsim-linux-bionetgen"}
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    assert all(v in volumes for v in re.findall(r"name: (bngsim-ccache-\S+)", compose))
+
+
+def test_clean_removes_the_caches_and_keeps_the_images(monkeypatch, capsys):
+    rc, removed, out = _clean(monkeypatch, capsys)
+    assert rc == 0
+    assert removed == [["docker", "volume", "rm", "bngsim-ccache-debian-amd64", "bngsim-ccache-ubuntu-amd64"]]
+    assert "bngsim-ccache-mine" not in out and "pgdata" not in out and "postgres" not in out
+    assert "bngsim-linux-other" not in out and "<none>" not in out
+    assert "bngsim-linux-amd64:latest  1.16GB  (kept; --images removes it)" in out
+
+
+def test_clean_images_removes_bionetgen_before_the_image_it_is_built_on(monkeypatch, capsys):
+    rc, removed, _ = _clean(monkeypatch, capsys, "--images")
+    assert rc == 0
+    assert removed[1] == ["docker", "image", "rm", "bngsim-linux-bionetgen:candidate", "bngsim-linux-amd64:latest"]
+
+
+def test_clean_dry_run_lists_and_removes_nothing(monkeypatch, capsys):
+    rc, removed, out = _clean(monkeypatch, capsys, "--images", "--dry-run")
+    assert rc == 0 and removed == []
+    assert "+ docker volume rm" in out and "+ docker image rm" in out
+
+
+def test_clean_with_nothing_there_says_so(monkeypatch, capsys):
+    rc, removed, out = _clean(monkeypatch, capsys, df="null", images="postgres|16|400MB\n")
+    assert rc == 0 and removed == [] and "nothing of bngsim-docker's to remove" in out
+
+
+def test_clean_fails_when_docker_refuses(monkeypatch, capsys):
+    rc, _, _ = _clean(monkeypatch, capsys, rm_rc=1)
+    assert rc == 1
