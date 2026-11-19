@@ -113,6 +113,7 @@ And by `test` and `compare`:
 | `--timeout` | 5400 | seconds for each run |
 | `--image` | the `--kind` / `--arch` image | run another tag, such as `:candidate` |
 | `--known` | `known-failures.txt` | (`test` only) the standing failures |
+| `--fail-on-stale` | off | (`test` only) exit 1 when a standing failure passed, so the list is kept true |
 
 ### `test` and `compare`, side by side
 
@@ -123,6 +124,8 @@ And by `test` and `compare`:
 | Needs | nothing else | a checkout of main |
 | Goes stale | when main gains or fixes a standing failure | never |
 | Best for | a quick check | the final word before a pull request |
+
+**Before you write "as on main" in a pull request**, or repeat a reviewer's, run `compare`: it reruns each of the branch's failures on main in the same image, so the sentence comes with the run that backs it. A reviewer can re-run that claim, so it is worth running first.
 
 ## Settings
 
@@ -248,6 +251,7 @@ BNGSIM_DOCKER_IMAGE=bngsim-linux-bionetgen:latest python -m pytest -q tests/test
 |---|---|---|
 | tests and lint | ubuntu-latest | the tests above, ruff, shellcheck, hadolint |
 | build the images, check inside them | ubuntu-latest | builds the Debian, Ubuntu and BioNetGen images and runs `test_container.py` in each |
+| bngsim main, the whole suite (weekly) | ubuntu-latest | weekly and on demand: all of bngsim's suite on main in the Debian image, on native x86-64, with `--fail-on-stale`, so a new failure or a standing one that passed fails the job |
 | the arm64 image | ubuntu-24.04-arm | builds the arm64 image and checks inside it |
 | bngsim main, built and tested in the image | ubuntu-latest | builds bngsim's main through the CLI and runs a few of its test files; also weekly, as main moves |
 

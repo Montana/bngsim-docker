@@ -466,3 +466,32 @@ def test_an_emulated_failure_is_standing_on_an_arm_host(monkeypatch, tmp_path):
 def test_the_same_failure_on_a_native_run_is_the_tree_s(monkeypatch, tmp_path):
     rc, log = _test_on(monkeypatch, tmp_path, "amd64")
     assert rc == 1 and "NEW: t.py::spawn" in log and "emulated" not in log
+
+
+
+def test_fail_on_stale_turns_a_passed_standing_failure_into_a_failure(monkeypatch, tmp_path):
+    (tmp_path / "k.txt").write_text(KNOWN_TEXT)
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: [])
+    monkeypatch.setattr(bd, "daemon_arch", lambda: "amd64")
+    monkeypatch.setattr(bd, "run_tree", lambda *a, **k: bd.Run("5 passed", passed=["t.py::everywhere"]))
+    out = tmp_path / "o"
+    out.mkdir()
+    args = ["test", "--tree", str(tmp_path), "--out", str(out), "--known", str(tmp_path / "k.txt")]
+    assert bd.main(args) == 0  # reported, not failed, by default
+    assert bd.main([*args, "--fail-on-stale"]) == 1
+    assert "out of date (--fail-on-stale)" in (out / "docker.log").read_text()
+
+
+def test_fail_on_stale_passes_a_list_that_is_true(monkeypatch, tmp_path):
+    (tmp_path / "k.txt").write_text(KNOWN_TEXT)
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: [])
+    monkeypatch.setattr(bd, "daemon_arch", lambda: "amd64")
+    monkeypatch.setattr(bd, "run_tree",
+                        lambda *a, **k: bd.Run("1 failed, 4 passed", failed=["t.py::everywhere"], passed=["t.py::other"]))
+    out = tmp_path / "o"
+    out.mkdir()
+    rc = bd.main(["test", "--tree", str(tmp_path), "--out", str(out), "--known", str(tmp_path / "k.txt"),
+                  "--fail-on-stale"])
+    assert rc == 0

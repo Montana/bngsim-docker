@@ -94,6 +94,37 @@ jobs:
           path: smoke/
           retention-days: 7
 
+  full-suite:
+    # Weekly, and on demand: the whole of bngsim's suite on main, in the Debian
+    # image on a native x86-64 runner, failing on a failure known-failures.txt
+    # does not list and on one it lists that passed. So the list stays true.
+    name: bngsim main, the whole suite (weekly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: images
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: lanl/bngsim
+          path: bngsim
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          name: base-image
+      - run: gunzip -c base.tar.gz | docker load
+      - name: the whole suite through the CLI
+        run: |
+          python bngsim_docker.py test --tree bngsim --out full --workers 4 --build-jobs 2 \
+            --memory 14g --timeout 7200 --fail-on-stale
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-suite-logs
+          path: full/
+          retention-days: 14
+
   arm64:
     name: the arm64 image
     runs-on: ubuntu-24.04-arm

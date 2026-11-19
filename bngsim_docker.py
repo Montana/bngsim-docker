@@ -367,11 +367,16 @@ def cmd_test(a: argparse.Namespace) -> int:
              f"summary: {run.summary or 'no pytest summary (see build.log)'}"]
     lines += [f"  standing (fails on main here too): {t}" for t in standing]
     lines += [f"  NEW: {t}" for t in new]
+    stale = stale_known(run, known)
     lines += [f"  STALE: {t} is listed in {a.known.name} for this image and passed: delete its line, "
-              f"or name the images it fails in with @" for t in stale_known(run, known)]
+              f"or name the images it fails in with @" for t in stale]
     lines.append("no failure but the standing ones" if run.summary and not new else
                  "failures that are the tree's" if new else "the run did not finish")
+    if a.fail_on_stale and stale:
+        lines.append(f"{len(stale)} standing failure(s) passed: {a.known.name} is out of date (--fail-on-stale)")
     _report(a.out, lines)
+    if a.fail_on_stale and stale:
+        return 1
     return 0 if run.summary and not new else 1
 
 
@@ -488,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--timeout", type=float, default=5400, help="seconds for each run")
         if name == "test":
             p.add_argument("--known", type=Path, default=KNOWN, help="the standing failures")
+            p.add_argument("--fail-on-stale", action="store_true",
+                           help="exit 1 when a standing failure passed, so the list is kept true")
     p = sub.add_parser("clean", help="remove the compiler caches (and, with --images, the images)")
     p.add_argument("--images", action="store_true", help="remove the images too")
     p.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
