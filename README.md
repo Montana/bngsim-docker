@@ -1,3 +1,5 @@
+<img width="1870" height="841" alt="76b6a44b-fce6-43ba-9d2c-8878dd0c587e" src="https://github.com/user-attachments/assets/a793c0f9-419d-45c5-ae11-1db924514c2c" />
+
 # bngsim-docker
 
 Docker images and a small CLI for running [bngsim](https://github.com/lanl/bngsim)'s tests on Linux.
