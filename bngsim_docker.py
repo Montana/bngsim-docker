@@ -2,21 +2,38 @@
 """Build bngsim's Linux test images, check Docker can start them, and run a
 bngsim tree's tests in one.
 
-    python bngsim_docker.py build                      # bngsim-linux-amd64:latest
+    python bngsim_docker.py build                       # bngsim-linux-amd64:latest
     python bngsim_docker.py build --arch arm64
-    python bngsim_docker.py build --bionetgen          # bngsim-linux-bionetgen:latest (x86-64)
-    python bngsim_docker.py probe                      # does a container start?
-    python bngsim_docker.py doctor                     # probe; restart Docker Desktop if not
-    python bngsim_docker.py test --tree ~/work/bngsim  # the whole of python/tests
-    python bngsim_docker.py test --tree ~/work/bngsim --tests python/tests/test_x.py
+    python bngsim_docker.py build --kind ubuntu         # bngsim-linux-ubuntu:latest, as CI
+    python bngsim_docker.py build --kind bionetgen      # bngsim-linux-bionetgen:latest (x86-64)
+    python bngsim_docker.py probe                       # does a container start?
+    python bngsim_docker.py doctor                      # probe; restart Docker Desktop if not
+    python bngsim_docker.py test --tree ~/work/bngsim   # the whole of python/tests
+    python bngsim_docker.py test --tree ~/work/bngsim --tests python/tests/test_x.py --kind ubuntu
+    python bngsim_docker.py compare --tree ~/work/branch --main ~/work/main
     python bngsim_docker.py shell --tree ~/work/bngsim
-    python bngsim_docker.py test --tree . --dry-run    # print the commands, run nothing
+    python bngsim_docker.py test --tree . --dry-run     # print the commands, run nothing
+
+Three images (`--kind`):
+- debian (default): Debian 12, the image bngsim-preflights' linux_check runs;
+- ubuntu: Ubuntu 26.04 set up as bngsim's CI sets up ubuntu-latest (Python 3.12
+  from uv, KLU built from source, the dev extra);
+- bionetgen: the Debian image with BioNetGen 2.9.3, so the BNG2.pl tests run.
 
 `test` copies the tree into a scratch directory (without `.venv`, `build`,
 `.git`, logs and caches, so the container builds its own), builds it there with
 `uv sync`, runs pytest, and sorts the failures: those listed in
 `known-failures.txt` fail in this container on main too and are reported as
 such; any other failure is the tree's. The exit status is 1 only for those.
+
+`compare` runs the tests on a tree, then runs each test that failed again on a
+checkout of main, in the same image: a test that fails on main too is the
+image's or main's, and one that fails only on the tree is the tree's. It needs
+no list of known failures. The exit status is 1 only for those.
+
+The build compiles through ccache into a Docker volume per image
+(`bngsim-ccache-<kind>-<arch>`), so a second run of a tree, or of a branch and
+its main, recompiles only what changed. `--no-ccache` builds from scratch.
 
 `probe` asks for a real container, not `docker info`: after an update Docker
 Desktop on macOS can answer `docker info` and start no container. `doctor`
@@ -27,6 +44,7 @@ and probes once more.
 from __future__ import annotations
 
 import argparse
+import os
 import platform as host_platform
 import re
 import shlex
@@ -42,22 +60,35 @@ ROOT = Path(__file__).resolve().parent
 IMAGES = ROOT / "images"
 KNOWN = ROOT / "known-failures.txt"
 EXCLUDE = (".venv", "build", ".git", "*.log", "__pycache__", ".pytest_cache", ".mutate-backup", "*.so")
+KINDS = ("debian", "ubuntu", "bionetgen")
+DOCKERFILE = {"debian": "Dockerfile", "ubuntu": "Dockerfile.ubuntu", "bionetgen": "Dockerfile.bionetgen"}
 
 
-def image_name(arch: str, bionetgen: bool = False) -> str:
-    return "bngsim-linux-bionetgen:latest" if bionetgen else f"bngsim-linux-{arch}:latest"
+def image_name(arch: str, kind: str = "debian") -> str:
+    if kind == "bionetgen":
+        return "bngsim-linux-bionetgen:latest"
+    if kind == "ubuntu":
+        return "bngsim-linux-ubuntu:latest" if arch == "amd64" else f"bngsim-linux-ubuntu-{arch}:latest"
+    return f"bngsim-linux-{arch}:latest"
 
 
-def build_commands(arch: str, bionetgen: bool) -> list[list[str]]:
-    """The docker builds for an image: the base, then BioNetGen on top of it."""
-    if bionetgen and arch != "amd64":
-        raise SystemExit("BioNetGen's Linux release is x86-64 only: --bionetgen needs --arch amd64")
-    base = ["docker", "build", "--platform", f"linux/{arch}", "-t", image_name(arch),
-            "-f", str(IMAGES / "Dockerfile"), str(IMAGES)]
-    if not bionetgen:
-        return [base]
-    return [base, ["docker", "build", "--platform", "linux/amd64", "-t", image_name(arch, True),
-                   "-f", str(IMAGES / "Dockerfile.bionetgen"), str(IMAGES)]]
+def ccache_volume(arch: str, kind: str) -> str:
+    """One volume per image: the images' compilers differ, and so do their objects."""
+    return f"bngsim-ccache-{kind}-{arch}"
+
+
+def build_commands(arch: str, kind: str) -> list[list[str]]:
+    """The docker builds for an image: BioNetGen's is built on the Debian one."""
+    if kind == "bionetgen" and arch != "amd64":
+        raise SystemExit("BioNetGen's Linux release is x86-64 only: --kind bionetgen needs --arch amd64")
+
+    def build(k: str, *extra: str) -> list[str]:
+        return ["docker", "build", "--platform", f"linux/{arch}", "-t", image_name(arch, k),
+                "-f", str(IMAGES / DOCKERFILE[k]), *extra, str(IMAGES)]
+
+    if kind == "bionetgen":
+        return [build("debian"), build("bionetgen", "--build-arg", f"BASE={image_name(arch)}")]
+    return [build(kind)]
 
 
 def container_script(tests: list[str], workers: int, build_jobs: int = 2) -> str:
@@ -90,13 +121,20 @@ def read_known(path: Path = KNOWN) -> dict[str, str]:
     return known
 
 
+def _matches(test: str, ids: list[str] | dict[str, str]) -> bool:
+    """A failed id is one of `ids`, or one of its parametrized cases."""
+    return any(test == k or test.startswith(k + "[") for k in ids)
+
+
 def sort_failures(failed: list[str], known: dict[str, str]) -> tuple[list[str], list[str]]:
-    """(failures this container always has, failures that are the tree's). A known
-    entry matches a failed id that is it, or that is one of its parametrized cases."""
-    def is_known(test: str) -> bool:
-        return any(test == k or test.startswith(k + "[") for k in known)
-    standing = [t for t in failed if is_known(t)]
-    return standing, [t for t in failed if not is_known(t)]
+    """(failures this container always has, failures that are the tree's)."""
+    return [t for t in failed if _matches(t, known)], [t for t in failed if not _matches(t, known)]
+
+
+def compare_failures(branch: list[str], on_main: list[str]) -> tuple[list[str], list[str]]:
+    """(failures main has too, failures only the branch has): `on_main` is what
+    failed when the branch's failures were run again on main."""
+    return [t for t in branch if t in on_main], [t for t in branch if t not in on_main]
 
 
 def sh(cmd: list[str], *, dry: bool, timeout: float | None = None,
@@ -140,43 +178,123 @@ def copy_tree(src: Path, dest: Path, *, dry: bool) -> None:
         shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*EXCLUDE), symlinks=True)
 
 
-def run_command(tree: Path, out: Path, image: str, arch: str, script: str,
-                memory: str) -> list[str]:
-    return ["docker", "run", "--rm", "--platform", f"linux/{arch}", "--memory", memory,
-            "-v", f"{tree}:/src", "-v", f"{out}:/out", "-v", f"{ROOT / 'scripts'}:/scripts:ro",
-            image, "bash", "-c", script]
+def owner_env() -> list[str]:
+    """The caller's user and group, for the container to hand its files back to:
+    it runs as root, and on a Linux host what root wrote into the copy (the
+    tree's .venv) could not be deleted by the caller afterwards."""
+    if not hasattr(os, "getuid"):
+        return []
+    return ["-e", f"HOST_UID={os.getuid()}", "-e", f"HOST_GID={os.getgid()}"]
+
+
+def run_command(tree: Path, out: Path, image: str, arch: str, script: str, memory: str,
+                ccache: str | None = None) -> list[str]:
+    cmd = ["docker", "run", "--rm", "--platform", f"linux/{arch}", "--memory", memory, *owner_env(),
+           "-v", f"{tree}:/src", "-v", f"{out}:/out", "-v", f"{ROOT / 'scripts'}:/scripts:ro"]
+    if ccache:
+        cmd += ["-v", f"{ccache}:/ccache"]
+    return [*cmd, image, "bash", "-c", script]
+
+
+@dataclass
+class Where:
+    """What a run is on: the image, its platform, and how the container is given."""
+    image: str
+    arch: str
+    memory: str
+    ccache: str | None
+    workers: int
+    build_jobs: int
+    timeout: float
+    dry: bool
+
+
+def run_tree(tree: Path, out: Path, tests: list[str], w: Where) -> Run:
+    """Copy `tree` in, build it, run `tests`; the logs go to `out`."""
+    tree = tree.resolve()
+    if not (tree / "python" / "bngsim").is_dir() and not w.dry:
+        raise SystemExit(f"{tree} is not a bngsim tree (no python/bngsim)")
+    if not w.dry:
+        out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch:
+        copy = Path(scratch) / "src"
+        copy_tree(tree, copy, dry=w.dry)
+        script = container_script(tests, w.workers, w.build_jobs)
+        r = sh(run_command(copy, out.resolve(), w.image, w.arch, script, w.memory, w.ccache),
+               dry=w.dry, timeout=w.timeout)
+    if w.dry:
+        return Run("dry run")
+    log = out / "pytest.log"
+    return parse(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else r.stdout)
+
+
+def _where(a: argparse.Namespace) -> Where:
+    image = a.image or image_name(a.arch, a.kind)
+    return Where(image, a.arch, a.memory, None if a.no_ccache else ccache_volume(a.arch, a.kind),
+                 a.workers, a.build_jobs, a.timeout, a.dry_run)
+
+
+def cache_line(out: Path) -> str | None:
+    """The script's `ccache: H of N compiles from the cache` line, from build.log."""
+    log = out / "build.log"
+    if not log.is_file():
+        return None
+    rows = [ln for ln in log.read_text(encoding="utf-8", errors="replace").splitlines() if ln.startswith("ccache: ")]
+    return rows[-1] if rows else None
+
+
+def _report(out: Path, lines: list[str]) -> None:
+    print("\n".join(lines))
+    if out.is_dir():
+        (out / "docker.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def cmd_test(a: argparse.Namespace) -> int:
-    image = a.image or image_name(a.arch, a.bionetgen)
-    tree = a.tree.resolve()
-    if not (tree / "python" / "bngsim").is_dir() and not a.dry_run:
-        raise SystemExit(f"{tree} is not a bngsim tree (no python/bngsim)")
-    if not probe(image, a.arch, dry=a.dry_run):
-        raise SystemExit(f"no container of {image} starts: run `python bngsim_docker.py doctor`")
-    out = a.out.resolve()
-    if not a.dry_run:
-        out.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="bngsim-docker-") as scratch:
-        copy = Path(scratch) / "src"
-        copy_tree(tree, copy, dry=a.dry_run)
-        r = sh(run_command(copy, out, image, a.arch, container_script(a.tests, a.workers, a.build_jobs),
-                           a.memory),
-               dry=a.dry_run, timeout=a.timeout)
-    if a.dry_run:
+    w = _where(a)
+    if not probe(w.image, w.arch, dry=w.dry):
+        raise SystemExit(f"no container of {w.image} starts: run `python bngsim_docker.py doctor`")
+    run = run_tree(a.tree, a.out, a.tests, w)
+    if w.dry:
         return 0
-    log = out / "pytest.log"
-    run = parse(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else r.stdout)
     standing, new = sort_failures(run.failed, read_known(a.known))
-    report = [f"image {image}", f"summary: {run.summary or 'no pytest summary (see build.log)'}"]
-    report += [f"  standing (fails on main here too): {t}" for t in standing]
-    report += [f"  NEW: {t}" for t in new]
-    verdict = "no failure but the standing ones" if run.summary and not new else \
-        "failures that are the tree's" if new else "the run did not finish"
-    report.append(verdict)
-    (out / "docker.log").write_text("\n".join(report) + "\n", encoding="utf-8")
-    print("\n".join(report))
+    lines = [f"image {w.image}", *filter(None, [cache_line(a.out)]),
+             f"summary: {run.summary or 'no pytest summary (see build.log)'}"]
+    lines += [f"  standing (fails on main here too): {t}" for t in standing]
+    lines += [f"  NEW: {t}" for t in new]
+    lines.append("no failure but the standing ones" if run.summary and not new else
+                 "failures that are the tree's" if new else "the run did not finish")
+    _report(a.out, lines)
     return 0 if run.summary and not new else 1
+
+
+def cmd_compare(a: argparse.Namespace) -> int:
+    w = _where(a)
+    if not probe(w.image, w.arch, dry=w.dry):
+        raise SystemExit(f"no container of {w.image} starts: run `python bngsim_docker.py doctor`")
+    branch = run_tree(a.tree, a.out / "branch", a.tests, w)
+    if w.dry:
+        run_tree(a.main, a.out / "main", ["<the branch's failures>"], w)
+        return 0
+    lines = [f"image {w.image}", *filter(None, [cache_line(a.out / "branch")]),
+             f"branch: {branch.summary or 'no pytest summary (see branch/build.log)'}"]
+    if not branch.summary:
+        _report(a.out, [*lines, "the branch's run did not finish"])
+        return 1
+    if not branch.failed:
+        _report(a.out, [*lines, "nothing fails on the branch"])
+        return 0
+    main = run_tree(a.main, a.out / "main", branch.failed, w)
+    lines.append(f"main, the branch's {len(branch.failed)} failure(s) run again: "
+                 f"{main.summary or 'no pytest summary (see main/build.log)'}")
+    if not main.summary:
+        _report(a.out, [*lines, "the run on main did not finish"])
+        return 1
+    both, only = compare_failures(branch.failed, main.failed)
+    lines += [f"  fails on main too: {t}" for t in both]
+    lines += [f"  BRANCH ONLY: {t}" for t in only]
+    lines.append("failures that are the branch's" if only else "every failure fails on main too")
+    _report(a.out, lines)
+    return 1 if only else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,38 +302,44 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--arch", choices=["amd64", "arm64"], default="amd64")
+    common.add_argument("--kind", choices=KINDS, default="debian",
+                        help="debian (default), ubuntu (as bngsim's CI) or bionetgen")
     common.add_argument("--dry-run", action="store_true", help="print the commands; run nothing")
 
-    b = sub.add_parser("build", parents=[common], help="build an image")
-    b.add_argument("--bionetgen", action="store_true", help="also build the BioNetGen image (x86-64)")
+    sub.add_parser("build", parents=[common], help="build an image")
     for name, helptext in (("probe", "does a container start?"),
                            ("doctor", "probe; restart Docker Desktop if no container starts")):
         p = sub.add_parser(name, parents=[common], help=helptext)
-        p.add_argument("--image", help="default: bngsim-linux-<arch>:latest")
+        p.add_argument("--image", help="default: the --kind and --arch image")
     for name, helptext in (("test", "run a tree's tests in a container"),
+                           ("compare", "run a tree's tests, and its failures again on main"),
                            ("shell", "a shell in a container, the tree copied to /src")):
         p = sub.add_parser(name, parents=[common], help=helptext)
         p.add_argument("--tree", type=Path, default=Path("."), help="a bngsim tree (default: here)")
-        p.add_argument("--image", help="default: bngsim-linux-<arch>:latest")
-        p.add_argument("--bionetgen", action="store_true", help="use bngsim-linux-bionetgen:latest")
+        p.add_argument("--image", help="default: the --kind and --arch image")
         p.add_argument("--memory", default="10g", help="the container's memory limit (default 10g)")
+        if name == "shell":
+            continue
+        if name == "compare":
+            p.add_argument("--main", type=Path, required=True, help="a checkout of bngsim's main")
+        p.add_argument("--tests", nargs="*", default=[], help="test files or ids (default: python/tests)")
+        p.add_argument("--workers", type=int, default=3, help="pytest-xdist workers")
+        p.add_argument("--build-jobs", type=int, default=2,
+                       help="compiles at once (default 2: ExprTk alone takes several GB)")
+        p.add_argument("--no-ccache", action="store_true", help="build without the ccache volume")
+        p.add_argument("--out", type=Path, default=Path("docker-check"), help="where the logs go")
+        p.add_argument("--timeout", type=float, default=5400, help="seconds for each run")
         if name == "test":
-            p.add_argument("--tests", nargs="*", default=[], help="test files or ids (default: python/tests)")
-            p.add_argument("--workers", type=int, default=3, help="pytest-xdist workers")
-            p.add_argument("--build-jobs", type=int, default=2,
-                           help="compiles at once (default 2: ExprTk alone takes several GB)")
-            p.add_argument("--out", type=Path, default=Path("docker-check"), help="where the logs go")
             p.add_argument("--known", type=Path, default=KNOWN, help="the standing failures")
-            p.add_argument("--timeout", type=float, default=5400, help="seconds for the run")
     a = ap.parse_args(argv)
 
     if a.cmd == "build":
-        for cmd in build_commands(a.arch, a.bionetgen):
+        for cmd in build_commands(a.arch, a.kind):
             if sh(cmd, dry=a.dry_run, capture=False).returncode != 0:
                 return 1
         return 0
     if a.cmd in ("probe", "doctor"):
-        image = a.image or image_name(a.arch)
+        image = a.image or image_name(a.arch, a.kind)
         if probe(image, a.arch, dry=a.dry_run):
             print(f"{image}: a container starts")
             return 0
@@ -228,9 +352,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
     if a.cmd == "test":
         return cmd_test(a)
+    if a.cmd == "compare":
+        return cmd_compare(a)
     # shell
-    image = a.image or image_name(a.arch, a.bionetgen)
-    with tempfile.TemporaryDirectory(prefix="bngsim-docker-") as scratch:
+    image = a.image or image_name(a.arch, a.kind)
+    with tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch:
         copy = Path(scratch) / "src"
         copy_tree(a.tree.resolve(), copy, dry=a.dry_run)
         cmd = ["docker", "run", "--rm", "-it", "--platform", f"linux/{a.arch}", "--memory", a.memory,

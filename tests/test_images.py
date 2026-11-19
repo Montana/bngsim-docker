@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BASE = (ROOT / "images" / "Dockerfile").read_text(encoding="utf-8")
 BNG = (ROOT / "images" / "Dockerfile.bionetgen").read_text(encoding="utf-8")
+UBUNTU = (ROOT / "images" / "Dockerfile.ubuntu").read_text(encoding="utf-8")
 
 
 def _arg(text: str, name: str) -> str:
@@ -74,6 +75,8 @@ def test_compose_names_the_images_the_cli_runs():
     assert services["linux-bionetgen"]["image"] == "bngsim-linux-bionetgen:latest"
     assert services["suite"]["image"] == "bngsim-linux-amd64:latest"
     assert services["suite-bionetgen"]["platform"] == "linux/amd64"
+    assert services["linux-ubuntu"]["image"] == "bngsim-linux-ubuntu:latest"
+    assert services["suite-ubuntu"]["image"] == "bngsim-linux-ubuntu:latest"
 
 
 def test_compose_builds_without_a_tree_and_runs_the_shared_script():
@@ -85,3 +88,30 @@ def test_compose_builds_without_a_tree_and_runs_the_shared_script():
     assert mounts["/tree"]["read_only"] is True
     assert mounts["/scripts"]["read_only"] is True
     assert "set-BNGSIM_TREE" in mounts["/tree"]["source"]  # the default names what to set
+    assert mounts["/ccache"]["type"] == "volume"
+
+
+# ── the Ubuntu image, as bngsim's CI sets up ubuntu-latest ──────────────────
+
+
+def test_ubuntu_is_pinned_by_digest():
+    """A tag such as 26.04 moves with each point release; a digest does not."""
+    assert re.fullmatch(r"26\.04@sha256:[0-9a-f]{64}", _arg(UBUNTU, "UBUNTU"))
+    assert "FROM ubuntu:${UBUNTU}" in UBUNTU
+
+
+def test_ubuntu_takes_uv_and_python_as_ci_does():
+    assert _arg(UBUNTU, "UV_VERSION") == _arg(BASE, "UV_VERSION")
+    assert "FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv" in UBUNTU
+    assert "UV_PYTHON=3.12" in UBUNTU and "RUN uv python install 3.12" in UBUNTU
+    assert "BNGSIM_EXTRA=dev" in UBUNTU
+
+
+def test_ubuntu_has_no_suitesparse_package():
+    """CI builds KLU's subset from source; a system SuiteSparse would hide a break there."""
+    assert "suitesparse" not in UBUNTU.split("FROM ubuntu", 1)[1].split("ENV UV_PYTHON")[0].lower()
+
+
+@pytest.mark.parametrize("text", [BASE, UBUNTU], ids=["debian", "ubuntu"])
+def test_both_images_compile_through_ccache(text):
+    assert re.search(r"^\s+ccache \\$", text, re.M)

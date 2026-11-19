@@ -8,7 +8,7 @@
 # Everything is pinned to the versions the checks were first run with, so a
 # rebuild gives the same compiler and the same libm:
 #   Debian 12 (bookworm), Python 3.12.16, gcc 12.2, CMake 3.25, Ninja 1.11,
-#   SuiteSparse 5.12 (KLU), uv 0.12.18.
+#   SuiteSparse 5.12 (KLU), ccache, uv 0.12.18.
 #
 #   docker build --platform linux/amd64 -t bngsim-linux-amd64:latest -f images/Dockerfile images
 #   docker build --platform linux/arm64 -t bngsim-linux-arm64:latest -f images/Dockerfile images
@@ -20,10 +20,13 @@ ARG UV_VERSION=0.12.18
 # build-essential: gcc/g++ 12 for the core and for codegen's cc backend.
 # libsuitesparse-dev: KLU, so the sparse linear solver is built (BNGSIM_ENABLE_KLU).
 # git: bngsim's build reads its own commit; tests that check vendoring call git.
+# ccache: a run's compiles are kept in a volume, so the next run of a tree
+# rebuilds only what changed (scripts/container-test.sh).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
+        ccache \
         cmake \
         git \
         libsuitesparse-dev \

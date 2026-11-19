@@ -1,0 +1,50 @@
+# The image that matches bngsim's CI: its python-tests job runs on GitHub's
+# ubuntu-latest, which is Ubuntu 26.04 (resolute). A failure that depends on
+# the C library's rounding reproduces here as it does there: glibc 2.43, where
+# the Debian 12 image has 2.36.
+#
+# It is set up as that job sets up its runner:
+# - Python 3.12 from uv (`uv sync --python 3.12`), not the system's: 26.04 has
+#   no system 3.12.
+# - No SuiteSparse package: CI builds KLU's pinned subset from source
+#   (BNGSIM_KLU_AUTOBUILD), as an sdist install on a bare host does, so the
+#   image does not provide one.
+# - The `dev` extra (Antimony, RoadRunner, JAX, ...), so the tests that need an
+#   optional extra run here instead of skipping.
+# - ccache, as CI compiles through it.
+#
+# Pinned: ubuntu:26.04 by digest (gcc 15.2, CMake 4.2, Ninja 1.13, ccache 4.12
+# from its archive), uv 0.12.18, CPython 3.12 installed into the image.
+#
+#   docker build --platform linux/amd64 -t bngsim-linux-ubuntu:latest -f images/Dockerfile.ubuntu images
+ARG UBUNTU=26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
+ARG UV_VERSION=0.12.18
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM ubuntu:${UBUNTU}
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        ccache \
+        cmake \
+        git \
+        ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# CPython 3.12 into the image, so a run does not download it.
+ENV UV_PYTHON=3.12 \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN uv python install 3.12
+
+ENV UV_LINK_MODE=copy \
+    CMAKE_BUILD_PARALLEL_LEVEL=2 \
+    SUNLOGGER_WARNING_FILENAME=/dev/null \
+    BNGSIM_EXTRA=dev
+WORKDIR /src
+CMD ["bash"]
