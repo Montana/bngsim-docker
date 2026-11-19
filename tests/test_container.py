@@ -84,3 +84,12 @@ def test_bionetgen_runs():
     assert run("echo $BNGPATH").startswith("/opt/BioNetGen-")
     assert run('perl "$BNGPATH/BNG2.pl" -v 2>&1 | grep -o "BioNetGen version [0-9.]*"').startswith("BioNetGen version")
     run('test -x "$BNGPATH/bin/run_network" && test -x "$BNGPATH/bin/NFsim"')
+
+
+def test_the_image_carries_the_repository_s_dockerfiles():
+    # What `test` and `compare` compare with the repository's, to warn of an image
+    # built from an older Dockerfile. CI builds and checks the image from this tree.
+    names = ["Dockerfile", "Dockerfile.bionetgen"] if "bionetgen" in IMAGE else (
+        ["Dockerfile.ubuntu"] if UBUNTU else ["Dockerfile"])
+    for name in names:
+        assert run(f"cat /etc/bngsim-docker/{name}") == (ROOT / "images" / name).read_text(encoding="utf-8").strip()

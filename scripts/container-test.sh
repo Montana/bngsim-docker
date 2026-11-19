@@ -62,6 +62,15 @@ if [ -f ci/libpython_on_loader_path.sh ]; then
     done < "$GITHUB_ENV"
     rm -f "$GITHUB_ENV"
 fi
+# The copy has no .git, and a test asks git about the tree it runs in: make it a
+# work tree, as a checkout is. After the build, which reads no git; git refuses a
+# tree another user owns, as /src is on a Linux host, unless told it is safe.
+if [ ! -e .git ] && command -v git >/dev/null; then
+    git config --global --add safe.directory /src
+    git init -q .
+fi
 .venv/bin/python -c "import bngsim, platform; print(bngsim.__version__, platform.machine(), platform.libc_ver())"
-.venv/bin/python -m pytest -q -p no:cacheprovider -n "$WORKERS" -rf "$@" > /out/pytest.log 2>&1 || true
+# -rfEp: the failed, errored and passed ids, so the CLI can say which standing
+# failure passed.
+.venv/bin/python -m pytest -q -p no:cacheprovider -n "$WORKERS" -rfEp "$@" > /out/pytest.log 2>&1 || true
 grep -E '^FAILED|^ERROR|[0-9]+ (passed|failed)' /out/pytest.log | tail -40

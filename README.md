@@ -189,16 +189,22 @@ A handful of tests fail in these containers on bngsim's main too. [`known-failur
 | `test_codegen_compile_reaping.py::test_a_compiler_that_cannot_be_started_raises_as_popen_did` | every image | a missing compiler does not raise `FileNotFoundError` ("DID NOT RAISE"). It fails in the Debian and the Ubuntu image alike and passes on CI's runners, so it is not the distribution; cause not traced |
 | `test_codegen_toolchain_verdict.py::test_a_missing_compiler_is_a_verdict_said_once` | every image | the same: with `CC` pointing nowhere, the refusal reads "the C toolchain cannot build a codegen library", not "C compiler not found" |
 | `test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green` | Debian, BioNetGen | the optional extras are not installed (jax, diffrax, roadrunner, vivarium-core); it passes on the Ubuntu image, which installs the `dev` extra |
-| `test_vendor_script_git_cwd.py::TestGuardRunsGitInsideAWorkTree::test_git_is_invoked_from_a_directory_git_recognizes` | every image | the tree is copied without `.git`, so `/src` is not a Git work tree |
 
-Measured on bngsim main: the Debian image, 4 failed and 79 passed on these four files and a few others (the full suite, in the image `linux_check.py` ran before this repository: the same 4 failed, 19,932 passed); the Ubuntu image, 4 failed and 88 passed before its RoadRunner fix, then that file 22 passed. A listed test that passes in one image is not a failure there, so one list serves all three.
+Measured on bngsim main: the Debian image, 4 failed and 79 passed on these files and a few others (the full suite, in the image `linux_check.py` ran before this repository: the same 4 failed, 19,932 passed); the Ubuntu image, 4 failed and 88 passed before its RoadRunner fix, then that file 22 passed. A fourth, `test_vendor_script_git_cwd.py`, failed in every image because the tree is copied without `.git`; the script now makes the copy a Git work tree (`git init`, after the build), and it passes.
 
-Add a line when main shows a new one here, and remove it when main fixes it. `compare` needs no list at all.
+An entry fails in every image unless it names the ones it fails in, after the id:
+
+```
+python/tests/test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green @debian @bionetgen  # why
+```
+
+In an image it does not name, its failure is the tree's. `test` also says when a listed test **passed** in this image (pytest runs with `-rfEp`, so the log names every passed id): a line `STALE: <id> ... delete its line, or name the images it fails in with @`. That is how the list hears that main fixed one. A test the run skipped or did not select is not reported. Add a line when main shows a new failure here. `compare` needs no list at all.
 
 ## Troubleshooting
 
 | Symptom | Cause | What to do |
 |---|---|---|
+| `WARNING: … was built from an older images/Dockerfile` (or `carries no copy of`) | each image keeps a copy of the Dockerfiles it was built from in `/etc/bngsim-docker`, and `test` and `compare` compare it with this repository's. An image built before a change, such as ccache, runs without it | rebuild as the warning says; only the layers after the change are rebuilt. The run goes on either way |
 | `docker info` works, but no container ever starts | Docker Desktop on macOS after an update | `doctor`: it quits Docker Desktop by its full name (`quit app "Docker Desktop"`; "Docker" does not do it), stops `com.docker.backend`, opens it again, and probes |
 | `Killed signal terminated program cc1plus` | ExprTk's translation unit (`src/expression.cpp`) alone takes several GB; three at once overran Docker Desktop's default 8 GB VM | keep `--build-jobs 2`; raise it only with the VM's memory, and run one bngsim build at a time |
 | BNG2.pl tests fail when run from another directory | a relative `BNGPATH` | the BioNetGen image sets an absolute one; keep it absolute if you override it |

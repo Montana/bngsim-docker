@@ -116,8 +116,115 @@ def test_every_known_failure_says_why():
     for line in bd.KNOWN.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#"):
             test, sep, why = line.partition("#")
-            assert test.strip().startswith("python/tests/test_") and "::" in test, line
+            assert test.split()[0].startswith("python/tests/test_") and "::" in test, line
             assert sep and why.strip(), f"no reason given: {line}"
+
+
+def test_every_image_a_known_failure_names_is_one():
+    for test, kinds in bd.known_kinds().items():
+        assert set(kinds) <= set(bd.KINDS), (test, kinds)
+
+
+KNOWN_TEXT = """t.py::everywhere  # fails in every image
+t.py::somewhere @debian @bionetgen  # only where the extras are missing
+"""
+
+
+def test_a_known_failure_counts_only_in_the_images_it_names(tmp_path):
+    path = tmp_path / "known.txt"
+    path.write_text(KNOWN_TEXT)
+    assert set(bd.read_known(path)) == {"t.py::everywhere", "t.py::somewhere"}
+    assert set(bd.read_known(path, "debian")) == {"t.py::everywhere", "t.py::somewhere"}
+    assert set(bd.read_known(path, "ubuntu")) == {"t.py::everywhere"}
+    assert bd.read_known(path, "ubuntu")["t.py::everywhere"] == "fails in every image"
+    # Where it is not named, its failure is the tree's.
+    standing, new = bd.sort_failures(["t.py::somewhere"], bd.read_known(path, "ubuntu"))
+    assert standing == [] and new == ["t.py::somewhere"]
+
+
+def test_the_passed_ids_are_read():
+    out = "PASSED t.py::a\nPASSED t.py::b[1]\nFAILED t.py::c - boom\n=== 1 failed, 2 passed in 3s ===\n"
+    run = bd.parse(out)
+    assert run.passed == ["t.py::a", "t.py::b[1]"] and run.failed == ["t.py::c"]
+    assert run.summary == "1 failed, 2 passed in 3s"
+
+
+def test_a_standing_failure_that_passed_is_stale():
+    known = {"t.py::a": "", "t.py::b": "", "t.py::c": "", "t.py::d": ""}
+    run = bd.Run("x", failed=["t.py::b[2]"], passed=["t.py::a", "t.py::b[1]", "t.py::c[1]", "t.py::cc"])
+    # a passed; b passed one case but failed another; c passed its case; d did not run.
+    assert bd.stale_known(run, known) == ["t.py::a", "t.py::c"]
+
+
+def test_test_reports_a_stale_entry_and_still_passes(monkeypatch, tmp_path):
+    (tmp_path / "k.txt").write_text(KNOWN_TEXT)
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: [])
+    monkeypatch.setattr(bd, "run_tree", lambda *a, **k: bd.Run("5 passed", passed=["t.py::everywhere"]))
+    out = tmp_path / "o"
+    out.mkdir()
+    rc = bd.main(["test", "--tree", str(tmp_path), "--out", str(out), "--known", str(tmp_path / "k.txt")])
+    log = (out / "docker.log").read_text()
+    assert rc == 0 and "STALE: t.py::everywhere" in log and "somewhere" not in log
+
+
+# ── the image older than its Dockerfiles ────────────────────────────────────
+
+
+def _digest(name):
+    import hashlib
+    return hashlib.sha256((bd.IMAGES / name).read_bytes()).hexdigest()
+
+
+def _stale(monkeypatch, kind, stdout):
+    seen = []
+
+    def sh(cmd, *, dry, **k):
+        seen.append(cmd)
+        return bd.subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(bd, "sh", sh)
+    return bd.stale_image("img", "amd64", kind, dry=False), seen
+
+
+def test_an_image_built_from_the_repository_s_dockerfile_is_current(monkeypatch):
+    warnings, seen = _stale(monkeypatch, "debian", f"{_digest('Dockerfile')}  Dockerfile\n")
+    assert warnings == []
+    assert seen[0][:6] == ["docker", "run", "--rm", "--platform", "linux/amd64", "img"]
+
+
+def test_an_image_built_from_an_older_dockerfile_is_named(monkeypatch):
+    warnings, _ = _stale(monkeypatch, "ubuntu", "0" * 64 + "  Dockerfile.ubuntu\n")
+    assert len(warnings) == 1 and "older images/Dockerfile.ubuntu" in warnings[0]
+    assert "build --kind ubuntu --arch amd64" in warnings[0]
+
+
+def test_an_image_with_no_copy_is_named(monkeypatch):
+    warnings, _ = _stale(monkeypatch, "debian", "")
+    assert len(warnings) == 1 and "carries no copy of images/Dockerfile" in warnings[0]
+
+
+def test_bionetgen_is_checked_against_its_base_too(monkeypatch):
+    current = f"{_digest('Dockerfile')}  Dockerfile\n{_digest('Dockerfile.bionetgen')}  Dockerfile.bionetgen\n"
+    assert _stale(monkeypatch, "bionetgen", current)[0] == []
+    old_base = f"{'0' * 64}  Dockerfile\n{_digest('Dockerfile.bionetgen')}  Dockerfile.bionetgen\n"
+    warnings, _ = _stale(monkeypatch, "bionetgen", old_base)
+    assert len(warnings) == 1 and "older images/Dockerfile;" in warnings[0]
+
+
+def test_a_dry_run_checks_no_image(monkeypatch):
+    monkeypatch.setattr(bd, "sh", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    assert bd.stale_image("img", "amd64", "debian", dry=True) == []
+
+
+def test_a_stale_image_is_warned_of_in_the_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: ["img was built from an older images/Dockerfile"])
+    monkeypatch.setattr(bd, "run_tree", lambda *a, **k: bd.Run("5 passed"))
+    out = tmp_path / "o"
+    out.mkdir()
+    assert bd.main(["test", "--tree", str(tmp_path), "--out", str(out)]) == 0
+    assert "WARNING: img was built from an older images/Dockerfile" in (out / "docker.log").read_text()
 
 
 def test_the_copy_leaves_out_the_host_s_build(tmp_path):
@@ -289,3 +396,17 @@ def test_clean_with_nothing_there_says_so(monkeypatch, capsys):
 def test_clean_fails_when_docker_refuses(monkeypatch, capsys):
     rc, _, _ = _clean(monkeypatch, capsys, rm_rc=1)
     assert rc == 1
+
+
+def test_test_counts_a_failure_as_the_tree_s_in_an_image_its_entry_does_not_name(monkeypatch, tmp_path):
+    (tmp_path / "k.txt").write_text(KNOWN_TEXT)
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: [])
+    monkeypatch.setattr(bd, "run_tree", lambda *a, **k: bd.Run("1 failed", failed=["t.py::somewhere"]))
+    out = tmp_path / "o"
+    out.mkdir()
+    args = ["test", "--tree", str(tmp_path), "--out", str(out), "--known", str(tmp_path / "k.txt")]
+    assert bd.main([*args, "--kind", "debian"]) == 0
+    assert "standing (fails on main here too): t.py::somewhere" in (out / "docker.log").read_text()
+    assert bd.main([*args, "--kind", "ubuntu"]) == 1
+    assert "NEW: t.py::somewhere" in (out / "docker.log").read_text()

@@ -27,6 +27,8 @@ Three images (`--kind`):
 `uv sync`, runs pytest, and sorts the failures: those listed in
 `known-failures.txt` fail in this container on main too and are reported as
 such; any other failure is the tree's. The exit status is 1 only for those.
+An entry may name the images it fails in (`@debian @bionetgen`); a listed test
+that passes in this image is reported STALE, so the list follows main.
 
 `compare` runs the tests on a tree, then runs each test that failed again on a
 checkout of main, in the same image: a test that fails on main too is the
@@ -36,6 +38,10 @@ no list of known failures. The exit status is 1 only for those.
 The build compiles through ccache into a Docker volume per image
 (`bngsim-ccache-<kind>-<arch>`), so a second run of a tree, or of a branch and
 its main, recompiles only what changed. `--no-ccache` builds from scratch.
+
+Each image keeps a copy of the Dockerfiles it was built from; `test` and
+`compare` warn where it differs from this repository's, as after a change such
+as ccache that the image was not rebuilt for.
 
 `probe` asks for a real container, not `docker info`: after an update Docker
 Desktop on macOS can answer `docker info` and start no container. `doctor`
@@ -51,6 +57,7 @@ names are not touched.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform as host_platform
@@ -71,6 +78,7 @@ EXCLUDE = (".venv", "build", ".git", "*.log", "__pycache__", ".pytest_cache", ".
 KINDS = ("debian", "ubuntu", "bionetgen")
 ARCHES = ("amd64", "arm64")
 DOCKERFILE = {"debian": "Dockerfile", "ubuntu": "Dockerfile.ubuntu", "bionetgen": "Dockerfile.bionetgen"}
+STAMPS = "/etc/bngsim-docker"  # where each image keeps a copy of the Dockerfiles it was built from
 
 
 def image_name(arch: str, kind: str = "debian") -> str:
@@ -111,23 +119,42 @@ def container_script(tests: list[str], workers: int, build_jobs: int = 2) -> str
 class Run:
     summary: str
     failed: list[str] = field(default_factory=list)
+    passed: list[str] = field(default_factory=list)
 
 
 def parse(output: str) -> Run:
-    """The summary line and the failed (or errored) test ids of a pytest run."""
+    """The summary line, and the failed (or errored) and passed test ids, of a pytest
+    run made with `-rfEp`, which lists each by id."""
     failed = [m.group(1) for m in re.finditer(r"^(?:FAILED|ERROR) (\S+)", output, re.M)]
+    passed = [m.group(1) for m in re.finditer(r"^PASSED (\S+)", output, re.M)]
     rows = [ln.strip("= ") for ln in output.splitlines() if re.search(r"\d+ (passed|failed)", ln)]
-    return Run(rows[-1] if rows else "", list(dict.fromkeys(failed)))
+    return Run(rows[-1] if rows else "", list(dict.fromkeys(failed)), list(dict.fromkeys(passed)))
 
 
-def read_known(path: Path = KNOWN) -> dict[str, str]:
-    """`known-failures.txt`: one test id per line, then `#` and why it fails here."""
+def read_known(path: Path = KNOWN, kind: str | None = None) -> dict[str, str]:
+    """`known-failures.txt`: one test id per line, then `#` and why it fails here.
+    An id may be followed by the images it fails in, as `@debian @bionetgen`; one
+    with none fails in every image. With `kind`, only the entries for that image."""
     known: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        test, _, why = line.partition("#")
-        if test.strip():
-            known[test.strip()] = why.strip()
+        head, _, why = line.partition("#")
+        if not head.strip():
+            continue
+        test, *tags = head.split()
+        kinds = [t[1:] for t in tags if t.startswith("@")]
+        if kind is None or not kinds or kind in kinds:
+            known[test] = why.strip()
     return known
+
+
+def known_kinds(path: Path = KNOWN) -> dict[str, list[str]]:
+    """Each entry's `@` images, as written (empty: every image)."""
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        head = line.partition("#")[0].split()
+        if head:
+            out[head[0]] = [t[1:] for t in head[1:] if t.startswith("@")]
+    return out
 
 
 def _matches(test: str, ids: list[str] | dict[str, str]) -> bool:
@@ -138,6 +165,14 @@ def _matches(test: str, ids: list[str] | dict[str, str]) -> bool:
 def sort_failures(failed: list[str], known: dict[str, str]) -> tuple[list[str], list[str]]:
     """(failures this container always has, failures that are the tree's)."""
     return [t for t in failed if _matches(t, known)], [t for t in failed if not _matches(t, known)]
+
+
+def stale_known(run: Run, known: dict[str, str]) -> list[str]:
+    """Standing failures this run passed (some case of, failing none): bngsim fixed
+    them, or they fail only in other images. A test the run skipped or did not
+    select is not listed."""
+    return [k for k in known if any(_matches(t, [k]) for t in run.passed)
+            and not any(_matches(t, [k]) for t in run.failed)]
 
 
 def compare_failures(branch: list[str], on_main: list[str]) -> tuple[list[str], list[str]]:
@@ -179,6 +214,35 @@ def restart_docker_desktop(*, dry: bool) -> None:
         if dry or sh(["docker", "info"], dry=dry).returncode == 0:
             return
         time.sleep(5)
+
+
+def stamp_names(kind: str) -> list[str]:
+    """The Dockerfiles an image is built from: BioNetGen's is built on the Debian one."""
+    return ["Dockerfile", "Dockerfile.bionetgen"] if kind == "bionetgen" else [DOCKERFILE[kind]]
+
+
+def stale_image(image: str, arch: str, kind: str, *, dry: bool) -> list[str]:
+    """Warnings where `image` was built from other Dockerfiles than the repository's
+    (each image keeps a copy of its own in STAMPS), so a change to an image, such as
+    ccache, does not reach the runs: the run goes on as before, without it."""
+    names = stamp_names(kind)
+    if dry:
+        return []
+    r = sh(["docker", "run", "--rm", "--platform", f"linux/{arch}", image, "sh", "-c",
+            f"cd {STAMPS} 2>/dev/null && sha256sum {' '.join(names)} 2>/dev/null; true"], dry=False)
+    have = {}
+    for line in r.stdout.splitlines():
+        digest, _, name = line.partition("  ")
+        have[name.strip()] = digest.strip()
+    rebuild = f"rebuild it: python bngsim_docker.py build --kind {kind} --arch {arch}"
+    out = []
+    for name in names:
+        want = hashlib.sha256((IMAGES / name).read_bytes()).hexdigest()
+        if name not in have:
+            out.append(f"{image} carries no copy of images/{name}, so it predates it or this check; {rebuild}")
+        elif have[name] != want:
+            out.append(f"{image} was built from an older images/{name}; {rebuild}")
+    return out
 
 
 def copy_tree(src: Path, dest: Path, *, dry: bool) -> None:
@@ -258,18 +322,30 @@ def _report(out: Path, lines: list[str]) -> None:
         (out / "docker.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def cmd_test(a: argparse.Namespace) -> int:
-    w = _where(a)
+def _start(w: Where, kind: str) -> list[str]:
+    """Probe, and warn where the image is older than its Dockerfiles."""
     if not probe(w.image, w.arch, dry=w.dry):
         raise SystemExit(f"no container of {w.image} starts: run `python bngsim_docker.py doctor`")
+    warnings = [f"WARNING: {m}" for m in stale_image(w.image, w.arch, kind, dry=w.dry)]
+    for m in warnings:
+        print(m, file=sys.stderr, flush=True)
+    return warnings
+
+
+def cmd_test(a: argparse.Namespace) -> int:
+    w = _where(a)
+    warnings = _start(w, a.kind)
     run = run_tree(a.tree, a.out, a.tests, w)
     if w.dry:
         return 0
-    standing, new = sort_failures(run.failed, read_known(a.known))
-    lines = [f"image {w.image}", *filter(None, [cache_line(a.out)]),
+    known = read_known(a.known, a.kind)
+    standing, new = sort_failures(run.failed, known)
+    lines = [f"image {w.image}", *warnings, *filter(None, [cache_line(a.out)]),
              f"summary: {run.summary or 'no pytest summary (see build.log)'}"]
     lines += [f"  standing (fails on main here too): {t}" for t in standing]
     lines += [f"  NEW: {t}" for t in new]
+    lines += [f"  STALE: {t} is listed in {a.known.name} for this image and passed: delete its line, "
+              f"or name the images it fails in with @" for t in stale_known(run, known)]
     lines.append("no failure but the standing ones" if run.summary and not new else
                  "failures that are the tree's" if new else "the run did not finish")
     _report(a.out, lines)
@@ -278,13 +354,12 @@ def cmd_test(a: argparse.Namespace) -> int:
 
 def cmd_compare(a: argparse.Namespace) -> int:
     w = _where(a)
-    if not probe(w.image, w.arch, dry=w.dry):
-        raise SystemExit(f"no container of {w.image} starts: run `python bngsim_docker.py doctor`")
+    warnings = _start(w, a.kind)
     branch = run_tree(a.tree, a.out / "branch", a.tests, w)
     if w.dry:
         run_tree(a.main, a.out / "main", ["<the branch's failures>"], w)
         return 0
-    lines = [f"image {w.image}", *filter(None, [cache_line(a.out / "branch")]),
+    lines = [f"image {w.image}", *warnings, *filter(None, [cache_line(a.out / "branch")]),
              f"branch: {branch.summary or 'no pytest summary (see branch/build.log)'}"]
     if not branch.summary:
         _report(a.out, [*lines, "the branch's run did not finish"])

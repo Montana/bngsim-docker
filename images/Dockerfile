@@ -42,5 +42,9 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 ENV UV_LINK_MODE=copy \
     CMAKE_BUILD_PARALLEL_LEVEL=2 \
     SUNLOGGER_WARNING_FILENAME=/dev/null
+# A copy of this file, which the CLI compares with the repository's to say when
+# the image is older than its Dockerfile. Last, so no other layer depends on
+# it.
+COPY Dockerfile /etc/bngsim-docker/Dockerfile
 WORKDIR /src
 CMD ["bash"]

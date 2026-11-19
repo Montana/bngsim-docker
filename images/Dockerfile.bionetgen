@@ -36,3 +36,8 @@ RUN curl -fsSL -o /tmp/bng.tgz \
 # An absolute BNGPATH: a relative one fails the tests that run BNG2.pl from
 # another directory.
 ENV BNGPATH=/opt/BioNetGen-${BNG_VERSION}
+
+# A copy of this file, which the CLI compares with the repository's to say when
+# the image is older than its Dockerfile. Last, so no other layer depends on
+# it.
+COPY Dockerfile.bionetgen /etc/bngsim-docker/Dockerfile.bionetgen

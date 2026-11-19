@@ -115,3 +115,16 @@ def test_ubuntu_has_no_suitesparse_package():
 @pytest.mark.parametrize("text", [BASE, UBUNTU], ids=["debian", "ubuntu"])
 def test_both_images_compile_through_ccache(text):
     assert re.search(r"^\s+ccache \\$", text, re.M)
+
+
+@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen"])
+def test_each_image_keeps_a_copy_of_its_dockerfile(name):
+    text = (ROOT / "images" / name).read_text(encoding="utf-8")
+    assert f"COPY {name} /etc/bngsim-docker/{name}" in text
+
+
+def test_the_script_makes_the_copy_a_git_work_tree_after_the_build():
+    script = (ROOT / "scripts" / "container-test.sh").read_text(encoding="utf-8")
+    sync, init, pytest_at = script.index("uv sync"), script.index("git init -q ."), script.index("-m pytest")
+    assert sync < init < pytest_at
+    assert "safe.directory /src" in script and "-rfEp" in script

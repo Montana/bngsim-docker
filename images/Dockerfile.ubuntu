@@ -46,5 +46,9 @@ ENV UV_LINK_MODE=copy \
     CMAKE_BUILD_PARALLEL_LEVEL=2 \
     SUNLOGGER_WARNING_FILENAME=/dev/null \
     BNGSIM_EXTRA=dev
+# A copy of this file, which the CLI compares with the repository's to say when
+# the image is older than its Dockerfile. Last, so no other layer depends on
+# it.
+COPY Dockerfile.ubuntu /etc/bngsim-docker/Dockerfile.ubuntu
 WORKDIR /src
 CMD ["bash"]
