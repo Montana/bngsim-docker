@@ -27,8 +27,8 @@ Three images (`--kind`):
 `uv sync`, runs pytest, and sorts the failures: those listed in
 `known-failures.txt` fail in this container on main too and are reported as
 such; any other failure is the tree's. The exit status is 1 only for those.
-An entry may name the images it fails in (`@debian @bionetgen`); a listed test
-that passes in this image is reported STALE, so the list follows main.
+An entry may name the images it fails in (`images=debian,bionetgen`), or be
+`emulated-only`; a listed test that passes in this image is reported STALE.
 
 `compare` runs the tests on a tree, then runs each test that failed again on a
 checkout of main, in the same image: a test that fails on main too is the
@@ -131,29 +131,55 @@ def parse(output: str) -> Run:
     return Run(rows[-1] if rows else "", list(dict.fromkeys(failed)), list(dict.fromkeys(passed)))
 
 
-EMULATED = "emulated"
+EMULATED = "emulated-only"  # the tag that limits an entry to an emulated run
+IMAGES_TAG = "images="  # the tag that names the images an entry fails in
+
+
+def entry_tags(tokens: list[str]) -> tuple[list[str], bool]:
+    """(the images an entry fails in, whether only where emulated) from the
+    words after its id: `images=debian,bionetgen` and `emulated-only`. Neither
+    is written `@name`, which GitHub reads as a mention of that account."""
+    kinds: list[str] = []
+    emulated = False
+    for t in tokens:
+        if t == EMULATED:
+            emulated = True
+        elif t.startswith(IMAGES_TAG):
+            kinds += [k for k in t[len(IMAGES_TAG):].split(",") if k]
+        else:
+            raise ValueError(f"known-failures: {t!r} is no tag (use {IMAGES_TAG}<kind,...> or {EMULATED})")
+    return kinds, emulated
 
 
 def read_known(path: Path = KNOWN, kind: str | None = None, emulated: bool | None = None) -> dict[str, str]:
     """`known-failures.txt`: one test id per line, then `#` and why it fails here.
-    An id may be followed by the images it fails in, as `@debian @bionetgen`; one
-    with none fails in every image. `@emulated` limits an entry to a run whose
-    image is emulated (an amd64 image on an Arm host). With `kind` and `emulated`,
-    only the entries for that run."""
+    An id may be followed by `images=debian,bionetgen`, the images it fails in;
+    one with none fails in every image. `emulated-only` limits an entry to a run
+    whose image is emulated (an amd64 image on an Arm host). With `kind` and
+    `emulated`, only the entries for that run."""
     known: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         head, _, why = line.partition("#")
         if not head.strip():
             continue
-        test, *tags = head.split()
-        tags = [t[1:] for t in tags if t.startswith("@")]
-        kinds = [t for t in tags if t != EMULATED]
+        test, *tokens = head.split()
+        kinds, only_emulated = entry_tags(tokens)
         if kind is not None and kinds and kind not in kinds:
             continue
-        if emulated is not None and EMULATED in tags and not emulated:
+        if emulated is not None and only_emulated and not emulated:
             continue
         known[test] = why.strip()
     return known
+
+
+def known_tags(path: Path = KNOWN) -> dict[str, tuple[list[str], bool]]:
+    """Each entry's (images, emulated-only), as written (no images: every image)."""
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        head = line.partition("#")[0].split()
+        if head:
+            out[head[0]] = entry_tags(head[1:])
+    return out
 
 
 def daemon_arch() -> str | None:
@@ -165,16 +191,6 @@ def daemon_arch() -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(r.stdout.strip())
-
-
-def known_kinds(path: Path = KNOWN) -> dict[str, list[str]]:
-    """Each entry's `@` tags, as written (no image tag: every image)."""
-    out = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        head = line.partition("#")[0].split()
-        if head:
-            out[head[0]] = [t[1:] for t in head[1:] if t.startswith("@")]
-    return out
 
 
 def _matches(test: str, ids: list[str] | dict[str, str]) -> bool:
@@ -393,7 +409,7 @@ def cmd_test(a: argparse.Namespace) -> int:
     lines += [f"  NEW: {t}" for t in new]
     stale = stale_known(run, known)
     lines += [f"  STALE: {t} is listed in {a.known.name} for this image and passed: delete its line, "
-              f"or name the images it fails in with @" for t in stale]
+              f"or narrow it with images=... or emulated-only" for t in stale]
     lines.append("no failure but the standing ones" if run.summary and not new else
                  "failures that are the tree's" if new else "the run did not finish")
     if a.fail_on_stale and stale:

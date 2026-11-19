@@ -195,13 +195,13 @@ A handful of tests fail in these containers on bngsim's main too. [`known-failur
 
 Measured on bngsim main: the Debian image, 4 failed and 79 passed on these files and a few others (the full suite, in the image `linux_check.py` ran before this repository: the same 4 failed, 19,932 passed); the Ubuntu image, 4 failed and 88 passed before its RoadRunner fix, then that file 22 passed. A fourth, `test_vendor_script_git_cwd.py`, failed in every image because the tree is copied without `.git`; the script now makes the copy a Git checkout before the build, committing exactly the files the host's checkout tracks (the CLI lists them), so the build stamps a commit and the tests that ask git what is tracked read what they do on the host. A tree from no checkout is left without `.git`, and those tests skip.
 
-An entry fails in every image unless it names the ones it fails in, after the id; `@emulated` limits it to a run whose image is emulated (the CLI compares `docker info`'s architecture with `--arch`, and says so on the report's first line):
+An entry fails in every image unless it names the ones it fails in, as `images=debian,bionetgen` after the id; `emulated-only` limits it to a run whose image is emulated (the CLI compares `docker info`'s architecture with `--arch`, and says so on the report's first line):
 
 ```
-python/tests/test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green @debian @bionetgen  # why
+python/tests/test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green images=debian,bionetgen  # why
 ```
 
-In an image it does not name, its failure is the tree's. `test` also says when a listed test **passed** in this image (pytest runs with `-rfEp`, so the log names every passed id): a line `STALE: <id> ... delete its line, or name the images it fails in with @`. That is how the list hears that main fixed one. A test the run skipped or did not select is not reported. Add a line when main shows a new failure here. `compare` needs no list at all.
+In an image it does not name, its failure is the tree's. `test` also says when a listed test **passed** in this image (pytest runs with `-rfEp`, so the log names every passed id): a line `STALE: <id> ... delete its line, or narrow it with images=... or emulated-only`. That is how the list hears that main fixed one. A test the run skipped or did not select is not reported. Add a line when main shows a new failure here. `compare` needs no list at all.
 
 ## Troubleshooting
 

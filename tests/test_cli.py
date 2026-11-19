@@ -121,12 +121,26 @@ def test_every_known_failure_says_why():
 
 
 def test_every_image_a_known_failure_names_is_one():
-    for test, kinds in bd.known_kinds().items():
-        assert set(kinds) <= {*bd.KINDS, bd.EMULATED}, (test, kinds)
+    for test, (kinds, _) in bd.known_tags().items():
+        assert set(kinds) <= set(bd.KINDS), (test, kinds)
+
+
+def test_no_tag_is_written_as_a_mention():
+    # `@name` in text GitHub renders mentions that account: `emulated` is a
+    # user, `debian` and `bionetgen` organizations.
+    assert "@" not in bd.KNOWN.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("tag", ["@debian", "@emulated", "images:debian", "emulated"])
+def test_a_tag_that_is_no_tag_is_refused(tmp_path, tag):
+    path = tmp_path / "k.txt"
+    path.write_text(f"t.py::a {tag}  # why\n")
+    with pytest.raises(ValueError, match="is no tag"):
+        bd.read_known(path)
 
 
 KNOWN_TEXT = """t.py::everywhere  # fails in every image
-t.py::somewhere @debian @bionetgen  # only where the extras are missing
+t.py::somewhere images=debian,bionetgen  # only where the extras are missing
 """
 
 
@@ -415,8 +429,8 @@ def test_test_counts_a_failure_as_the_tree_s_in_an_image_its_entry_does_not_name
 
 # ── emulation ───────────────────────────────────────────────────────────────
 
-EMULATED_TEXT = """t.py::spawn @emulated  # only under emulation
-t.py::extras @debian  # only in Debian
+EMULATED_TEXT = """t.py::spawn emulated-only  # only under emulation
+t.py::extras images=debian  # only in Debian
 t.py::everywhere  # always
 """
 
