@@ -123,11 +123,16 @@ def test_each_image_keeps_a_copy_of_its_dockerfile(name):
     assert f"COPY {name} /etc/bngsim-docker/{name}" in text
 
 
-def test_the_script_makes_the_copy_a_git_work_tree_after_the_build():
+def test_the_script_commits_the_tracked_files_before_the_build():
+    # bngsim's build stamps the commit it is built from, and tests ask git what
+    # is tracked: the copy is made a checkout, with the host's tracked files
+    # committed, before uv sync. (After the build, with nothing tracked, 9 tests
+    # failed that skip outside a checkout.)
     script = (ROOT / "scripts" / "container-test.sh").read_text(encoding="utf-8")
-    sync, init, pytest_at = script.index("uv sync"), script.index("git init -q ."), script.index("-m pytest")
-    assert sync < init < pytest_at
-    assert "safe.directory /src" in script and "-rfEp" in script
+    commit, sync = script.index("commit -q --no-verify"), script.index("uv sync --frozen")
+    assert script.index("git init -q .") < script.index("git add --pathspec-from-file") < commit < sync
+    assert "safe.directory '*'" in script and "-rfEp" in script
+    assert "if [ -f .bngsim-docker-tracked ]; then" in script  # no checkout: no git init
 
 
 def test_on_arm64_bngsim_installs_without_antimony():

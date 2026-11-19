@@ -495,3 +495,28 @@ def test_fail_on_stale_passes_a_list_that_is_true(monkeypatch, tmp_path):
     rc = bd.main(["test", "--tree", str(tmp_path), "--out", str(out), "--known", str(tmp_path / "k.txt"),
                   "--fail-on-stale"])
     assert rc == 0
+
+
+
+def test_the_copy_carries_the_files_its_checkout_tracks(tmp_path):
+    src, dest = tmp_path / "src", tmp_path / "dest"
+    (src / "python").mkdir(parents=True)
+    (src / "python" / "a.py").write_text("a\n")
+    (src / "untracked.py").write_text("u\n")
+    (src / "run.log").write_text("log\n")
+    bd.subprocess.run(["git", "init", "-q", str(src)], check=True)
+    bd.subprocess.run(["git", "-C", str(src), "add", "python/a.py", "run.log"], check=True)
+    bd.subprocess.run(["git", "-C", str(src), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+                      check=True)
+    bd.copy_tree(src, dest, dry=False)
+    # run.log is tracked but not copied (EXCLUDE), so it is not listed.
+    assert (dest / bd.TRACKED).read_text().split("\0") == ["python/a.py"]
+    assert len((dest / bd.HEAD).read_text()) == 40
+
+
+def test_a_tree_from_no_checkout_carries_no_list(tmp_path):
+    src, dest = tmp_path / "src", tmp_path / "dest"
+    src.mkdir()
+    (src / "a.py").write_text("a\n")
+    bd.copy_tree(src, dest, dry=False)
+    assert not (dest / bd.TRACKED).exists() and not (dest / bd.HEAD).exists()

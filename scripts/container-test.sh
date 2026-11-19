@@ -44,6 +44,31 @@ fi
 mkdir -p /out
 : > /out/build.log
 cd /src
+# The copy has no .git. Where the tree came from a checkout, make it one, with
+# exactly the files that checkout tracks committed, before the build: bngsim's
+# build stamps the commit it is built from, and tests ask git what is tracked
+# and where the work tree is. (The CLI writes the list; from /tree, under
+# Compose, it is read here.) git refuses a tree another user owns, as /src is
+# on a Linux host, unless told it is safe. A tree from no checkout is left as it
+# is, and the tests that need git skip, as they do outside a checkout.
+if [ ! -e .git ] && command -v git >/dev/null; then
+    git config --global --add safe.directory '*'
+    if [ ! -f .bngsim-docker-tracked ] && [ -d /tree/.git ]; then
+        git -C /tree ls-files -z > .bngsim-docker-tracked
+        git -C /tree rev-parse HEAD > .bngsim-docker-head 2>/dev/null || true
+    fi
+    if [ -f .bngsim-docker-tracked ]; then
+        mv .bngsim-docker-tracked /tmp/tracked
+        head=$(cat .bngsim-docker-head 2>/dev/null || echo unknown)
+        rm -f .bngsim-docker-head
+        git init -q .
+        # Only the listed files the copy holds (the copy leaves out logs and builds).
+        tr '\0' '\n' < /tmp/tracked | while IFS= read -r f; do [ -f "$f" ] && printf '%s\0' "$f"; done \
+            | git add --pathspec-from-file=- --pathspec-file-nul
+        git -c user.name=bngsim-docker -c user.email=bngsim-docker@localhost \
+            commit -q --no-verify -m "bngsim-docker copy of $head"
+    fi
+fi
 [ "$#" -gt 0 ] || set -- python/tests
 # antimony ships no Linux aarch64 wheel, so on arm64 bngsim installs without it.
 # The tests that need it skip or fail there (161 of bngsim's test files mention
@@ -71,13 +96,6 @@ if [ -f ci/libpython_on_loader_path.sh ]; then
         [ "$name" = LD_LIBRARY_PATH ] && export LD_LIBRARY_PATH="$value"
     done < "$GITHUB_ENV"
     rm -f "$GITHUB_ENV"
-fi
-# The copy has no .git, and a test asks git about the tree it runs in: make it a
-# work tree, as a checkout is. After the build, which reads no git; git refuses a
-# tree another user owns, as /src is on a Linux host, unless told it is safe.
-if [ ! -e .git ] && command -v git >/dev/null; then
-    git config --global --add safe.directory /src
-    git init -q .
 fi
 .venv/bin/python -c "import bngsim, platform; print(bngsim.__version__, platform.machine(), platform.libc_ver())"
 # -rfEp: the failed, errored and passed ids, so the CLI can say which standing

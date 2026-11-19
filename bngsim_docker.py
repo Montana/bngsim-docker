@@ -265,10 +265,34 @@ def stale_image(image: str, arch: str, kind: str, *, dry: bool) -> list[str]:
     return out
 
 
+TRACKED = ".bngsim-docker-tracked"  # in the copy: the files the host's checkout tracks
+HEAD = ".bngsim-docker-head"  # in the copy: the host's commit
+
+
+def tracked_in_copy(src: Path, dest: Path) -> list[str] | None:
+    """The files *src*'s git checkout tracks that the copy holds, or None where
+    *src* is not a checkout. The copy has no .git; the container makes it one
+    with these files committed, so a test that asks git what is tracked, and the
+    build's commit stamp, read a checkout as they do on the host."""
+    try:
+        r = subprocess.run(["git", "-C", str(src), "ls-files", "-z"], capture_output=True, text=True)
+    except OSError:  # no git on the host
+        return None
+    if r.returncode != 0:
+        return None
+    return [f for f in r.stdout.split("\0") if f and (dest / f).is_file()]
+
+
 def copy_tree(src: Path, dest: Path, *, dry: bool) -> None:
     print(f"+ copy {src} -> {dest} (without {', '.join(EXCLUDE)})", flush=True)
-    if not dry:
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*EXCLUDE), symlinks=True)
+    if dry:
+        return
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*EXCLUDE), symlinks=True)
+    tracked = tracked_in_copy(src, dest)
+    if tracked is not None:
+        (dest / TRACKED).write_text("\0".join(tracked), encoding="utf-8")
+        head = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"], capture_output=True, text=True)
+        (dest / HEAD).write_text(head.stdout.strip() or "unknown", encoding="utf-8")
 
 
 def owner_env() -> list[str]:
