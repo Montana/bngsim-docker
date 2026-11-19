@@ -42,9 +42,19 @@ if command -v ccache >/dev/null && [ -d /ccache ] && [ -w /ccache ]; then
     ccache --zero-stats >/dev/null
 fi
 mkdir -p /out
+: > /out/build.log
 cd /src
 [ "$#" -gt 0 ] || set -- python/tests
-uv sync --frozen --extra "$EXTRA" > /out/build.log 2>&1 || { tail -50 /out/build.log; exit 1; }
+# antimony ships no Linux aarch64 wheel, so on arm64 bngsim installs without it.
+# The tests that need it skip or fail there (161 of bngsim's test files mention
+# it); the amd64 images run the whole suite.
+SKIP=()
+if [ "$(uname -m)" = aarch64 ]; then
+    SKIP=(--no-install-package antimony)
+    echo "arm64: installing without antimony (no Linux aarch64 wheel); the tests that need it skip or fail here" \
+        | tee -a /out/build.log
+fi
+uv sync --frozen --extra "$EXTRA" "${SKIP[@]}" >> /out/build.log 2>&1 || { tail -50 /out/build.log; exit 1; }
 if [ -n "${CCACHE_DIR:-}" ]; then
     ccache --print-stats | awk -F'\t' '$1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" { h += $2 }
         $1 == "cache_miss" { m = $2 } END { printf "ccache: %d of %d compiles from the cache\n", h, h + m }' \

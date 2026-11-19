@@ -122,7 +122,7 @@ def test_every_known_failure_says_why():
 
 def test_every_image_a_known_failure_names_is_one():
     for test, kinds in bd.known_kinds().items():
-        assert set(kinds) <= set(bd.KINDS), (test, kinds)
+        assert set(kinds) <= {*bd.KINDS, bd.EMULATED}, (test, kinds)
 
 
 KNOWN_TEXT = """t.py::everywhere  # fails in every image
@@ -410,3 +410,59 @@ def test_test_counts_a_failure_as_the_tree_s_in_an_image_its_entry_does_not_name
     assert "standing (fails on main here too): t.py::somewhere" in (out / "docker.log").read_text()
     assert bd.main([*args, "--kind", "ubuntu"]) == 1
     assert "NEW: t.py::somewhere" in (out / "docker.log").read_text()
+
+
+
+# ── emulation ───────────────────────────────────────────────────────────────
+
+EMULATED_TEXT = """t.py::spawn @emulated  # only under emulation
+t.py::extras @debian  # only in Debian
+t.py::everywhere  # always
+"""
+
+
+def test_an_emulated_entry_counts_only_on_an_emulated_run(tmp_path):
+    path = tmp_path / "k.txt"
+    path.write_text(EMULATED_TEXT)
+    assert set(bd.read_known(path, "debian", True)) == {"t.py::spawn", "t.py::extras", "t.py::everywhere"}
+    assert set(bd.read_known(path, "debian", False)) == {"t.py::extras", "t.py::everywhere"}
+    assert set(bd.read_known(path, "ubuntu", True)) == {"t.py::spawn", "t.py::everywhere"}
+    # Unknown (no Docker to ask): every entry, as before the tag.
+    assert "t.py::spawn" in bd.read_known(path, "debian", None)
+
+
+@pytest.mark.parametrize("reported, arch", [("x86_64", "amd64"), ("aarch64", "arm64"), ("", None), ("riscv64", None)])
+def test_docker_s_architecture_is_read(monkeypatch, reported, arch):
+    monkeypatch.setattr(bd.subprocess, "run",
+                        lambda *a, **k: bd.subprocess.CompletedProcess(a[0], 0, reported + "\n", ""))
+    assert bd.daemon_arch() == arch
+
+
+def test_without_docker_the_architecture_is_unknown(monkeypatch):
+    def run(*a, **k):
+        raise FileNotFoundError("docker")
+    monkeypatch.setattr(bd.subprocess, "run", run)
+    assert bd.daemon_arch() is None
+
+
+def _test_on(monkeypatch, tmp_path, native):
+    (tmp_path / "k.txt").write_text(EMULATED_TEXT)
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: [])
+    monkeypatch.setattr(bd, "daemon_arch", lambda: native)
+    monkeypatch.setattr(bd, "run_tree", lambda *a, **k: bd.Run("1 failed", failed=["t.py::spawn"]))
+    out = tmp_path / "o"
+    out.mkdir(exist_ok=True)
+    rc = bd.main(["test", "--tree", str(tmp_path), "--out", str(out), "--known", str(tmp_path / "k.txt")])
+    return rc, (out / "docker.log").read_text()
+
+
+def test_an_emulated_failure_is_standing_on_an_arm_host(monkeypatch, tmp_path):
+    rc, log = _test_on(monkeypatch, tmp_path, "arm64")
+    assert rc == 0 and "standing (fails on main here too): t.py::spawn" in log
+    assert "(emulated: amd64 on an arm64 Docker)" in log
+
+
+def test_the_same_failure_on_a_native_run_is_the_tree_s(monkeypatch, tmp_path):
+    rc, log = _test_on(monkeypatch, tmp_path, "amd64")
+    assert rc == 1 and "NEW: t.py::spawn" in log and "emulated" not in log

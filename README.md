@@ -54,7 +54,7 @@ The versions are read from the built images; `tests/test_container.py` checks th
 | Is a ulp-sensitive solver change the same on Linux? | `test --tree . --kind ubuntu` (CI's libm), then `--kind debian` for a second glibc |
 | Is this failure mine or main's? | `compare --tree . --main ~/work/bngsim-main` |
 | Do the BNG2.pl / NFsim parity tests pass? | `test --tree . --kind bionetgen` |
-| Does it pass on 64-bit Arm Linux? | `test --tree . --arch arm64` (native speed on Apple Silicon) |
+| Does it pass on 64-bit Arm Linux? | `test --tree . --arch arm64` (native speed on Apple Silicon; installs without antimony, which has no Linux aarch64 wheel, so for builds and targeted tests, not the whole suite) |
 | I want to poke at the build by hand | `shell --tree .` |
 
 ## Quick start
@@ -186,13 +186,13 @@ A handful of tests fail in these containers on bngsim's main too. [`known-failur
 
 | Test | Fails in | Why it fails there |
 |---|---|---|
-| `test_codegen_compile_reaping.py::test_a_compiler_that_cannot_be_started_raises_as_popen_did` | every image | a missing compiler does not raise `FileNotFoundError` ("DID NOT RAISE"). It fails in the Debian and the Ubuntu image alike and passes on CI's runners, so it is not the distribution; cause not traced |
-| `test_codegen_toolchain_verdict.py::test_a_missing_compiler_is_a_verdict_said_once` | every image | the same: with `CC` pointing nowhere, the refusal reads "the C toolchain cannot build a codegen library", not "C compiler not found" |
+| `test_codegen_compile_reaping.py::test_a_compiler_that_cannot_be_started_raises_as_popen_did` | an amd64 image **emulated** (on an Apple Silicon host) | under x86-64 emulation `os.posix_spawnp` does not report a missing program (the child exits 127), so bngsim's compile supervisor raises no `FileNotFoundError`. The same glibc raises it natively: on the arm64 image and CI's x86 runners the test passes |
+| `test_codegen_toolchain_verdict.py::test_a_missing_compiler_is_a_verdict_said_once` | the same | the same cause: the refusal reads "the C toolchain cannot build a codegen library", not "C compiler not found" |
 | `test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green` | Debian, BioNetGen | the optional extras are not installed (jax, diffrax, roadrunner, vivarium-core); it passes on the Ubuntu image, which installs the `dev` extra |
 
 Measured on bngsim main: the Debian image, 4 failed and 79 passed on these files and a few others (the full suite, in the image `linux_check.py` ran before this repository: the same 4 failed, 19,932 passed); the Ubuntu image, 4 failed and 88 passed before its RoadRunner fix, then that file 22 passed. A fourth, `test_vendor_script_git_cwd.py`, failed in every image because the tree is copied without `.git`; the script now makes the copy a Git work tree (`git init`, after the build), and it passes.
 
-An entry fails in every image unless it names the ones it fails in, after the id:
+An entry fails in every image unless it names the ones it fails in, after the id; `@emulated` limits it to a run whose image is emulated (the CLI compares `docker info`'s architecture with `--arch`, and says so on the report's first line):
 
 ```
 python/tests/test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green @debian @bionetgen  # why
@@ -212,7 +212,8 @@ In an image it does not name, its failure is the tree's. `test` also says when a
 | `PermissionError` deleting the scratch copy (Linux host) | the container runs as root, so the `.venv` it built is root's | fixed: the CLI passes `HOST_UID`/`HOST_GID` and the script hands its files back; with Compose, pass them yourself |
 | `no bngsim tree at /tree (set BNGSIM_TREE)` | Compose run without `BNGSIM_TREE` | `BNGSIM_TREE=~/work/bngsim docker compose run --rm suite` |
 | `no pytest summary (see build.log)` | the build failed before pytest started | read `--out/build.log`; its last 50 lines are printed too |
-| The amd64 run is very slow on a Mac | x86-64 is emulated on Apple Silicon | let the cache warm (see above), or use `--arch arm64` when the architecture does not matter |
+| `arm64: installing without antimony` in `build.log` | antimony has no Linux aarch64 wheel, so `uv sync` of bngsim's `test` extra cannot install it | expected: the tests that need antimony skip or fail on arm64; run the suite on an amd64 image |
+| The amd64 run is very slow on a Mac | x86-64 is emulated on Apple Silicon | let the cache warm (see above), or use `--arch arm64` for a build or tests that need no antimony |
 | The run fails with "exec format error" | the image was built for another platform | build with the same `--arch` you run with |
 
 ## What is in the repository

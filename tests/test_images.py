@@ -128,3 +128,11 @@ def test_the_script_makes_the_copy_a_git_work_tree_after_the_build():
     sync, init, pytest_at = script.index("uv sync"), script.index("git init -q ."), script.index("-m pytest")
     assert sync < init < pytest_at
     assert "safe.directory /src" in script and "-rfEp" in script
+
+
+def test_on_arm64_bngsim_installs_without_antimony():
+    # antimony has no Linux aarch64 wheel: without this, uv sync fails there.
+    script = (ROOT / "scripts" / "container-test.sh").read_text(encoding="utf-8")
+    assert '[ "$(uname -m)" = aarch64 ]' in script and "--no-install-package antimony" in script
+    # The log is started once, then appended to, so the arm64 note stays in it.
+    assert script.index(": > /out/build.log") < script.index('"${SKIP[@]}" >> /out/build.log')

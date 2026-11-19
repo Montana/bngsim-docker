@@ -131,24 +131,44 @@ def parse(output: str) -> Run:
     return Run(rows[-1] if rows else "", list(dict.fromkeys(failed)), list(dict.fromkeys(passed)))
 
 
-def read_known(path: Path = KNOWN, kind: str | None = None) -> dict[str, str]:
+EMULATED = "emulated"
+
+
+def read_known(path: Path = KNOWN, kind: str | None = None, emulated: bool | None = None) -> dict[str, str]:
     """`known-failures.txt`: one test id per line, then `#` and why it fails here.
     An id may be followed by the images it fails in, as `@debian @bionetgen`; one
-    with none fails in every image. With `kind`, only the entries for that image."""
+    with none fails in every image. `@emulated` limits an entry to a run whose
+    image is emulated (an amd64 image on an Arm host). With `kind` and `emulated`,
+    only the entries for that run."""
     known: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         head, _, why = line.partition("#")
         if not head.strip():
             continue
         test, *tags = head.split()
-        kinds = [t[1:] for t in tags if t.startswith("@")]
-        if kind is None or not kinds or kind in kinds:
-            known[test] = why.strip()
+        tags = [t[1:] for t in tags if t.startswith("@")]
+        kinds = [t for t in tags if t != EMULATED]
+        if kind is not None and kinds and kind not in kinds:
+            continue
+        if emulated is not None and EMULATED in tags and not emulated:
+            continue
+        known[test] = why.strip()
     return known
 
 
+def daemon_arch() -> str | None:
+    """The architecture Docker runs natively ("amd64" or "arm64"), or None if it
+    cannot say. A container of another architecture is emulated."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.Architecture}}"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(r.stdout.strip())
+
+
 def known_kinds(path: Path = KNOWN) -> dict[str, list[str]]:
-    """Each entry's `@` images, as written (empty: every image)."""
+    """Each entry's `@` tags, as written (no image tag: every image)."""
     out = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         head = line.partition("#")[0].split()
@@ -338,9 +358,12 @@ def cmd_test(a: argparse.Namespace) -> int:
     run = run_tree(a.tree, a.out, a.tests, w)
     if w.dry:
         return 0
-    known = read_known(a.known, a.kind)
+    native = daemon_arch()
+    emulated = native is not None and native != w.arch
+    known = read_known(a.known, a.kind, emulated)
     standing, new = sort_failures(run.failed, known)
-    lines = [f"image {w.image}", *warnings, *filter(None, [cache_line(a.out)]),
+    lines = [f"image {w.image}" + (f" (emulated: {w.arch} on an {native} Docker)" if emulated else ""),
+             *warnings, *filter(None, [cache_line(a.out)]),
              f"summary: {run.summary or 'no pytest summary (see build.log)'}"]
     lines += [f"  standing (fails on main here too): {t}" for t in standing]
     lines += [f"  NEW: {t}" for t in new]
