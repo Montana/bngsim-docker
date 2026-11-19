@@ -1,0 +1,4 @@
+python/tests/test_codegen_compile_reaping.py::test_a_compiler_that_cannot_be_started_raises_as_popen_did  # here a missing compiler does not raise FileNotFoundError ("DID NOT RAISE"); passes on CI's Ubuntu runners; cause not traced
+python/tests/test_codegen_toolchain_verdict.py::test_a_missing_compiler_is_a_verdict_said_once  # the same: with CC pointing nowhere the refusal reads "the C toolchain cannot build a codegen library", not "C compiler not found"
+python/tests/test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green  # the optional extras are not installed: jax, diffrax, roadrunner, vivarium-core
+python/tests/test_vendor_script_git_cwd.py::TestGuardRunsGitInsideAWorkTree::test_git_is_invoked_from_a_directory_git_recognizes  # the tree is copied without .git, so /src is not a Git work tree

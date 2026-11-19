@@ -1,0 +1,38 @@
+# The Linux image with BioNetGen 2.9.3 (BNG2.pl, run_network, NFsim), so the
+# tests that need BNG2.pl run instead of skipping: from_bngl, run_bngl, the
+# protocol and referee tests, and the parity checks that compare with
+# run_network. Without it, a Linux run skips every one of them.
+#
+# x86-64 only: BioNetGen's Linux release ships x86-64 binaries.
+#
+#   docker build --platform linux/amd64 -t bngsim-linux-amd64:latest -f images/Dockerfile images
+#   docker build --platform linux/amd64 -t bngsim-linux-bionetgen:latest \
+#       -f images/Dockerfile.bionetgen images
+ARG BASE=bngsim-linux-amd64:latest
+# The tag is the BASE argument's (DL3006); the platform is fixed because
+# BioNetGen's Linux binaries are x86-64 (DL3029).
+# hadolint ignore=DL3006,DL3029
+FROM --platform=linux/amd64 ${BASE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG BNG_VERSION=2.9.3
+# sha256 of BioNetGen-2.9.3-linux.tar.gz, the RuleWorld/bionetgen release asset.
+ARG BNG_SHA256=b85743d422aa3fd112aceb3725dd1b1f2ff1ad829d20d71682680426582bcb5d
+
+# BNG2.pl is Perl; Debian's perl is enough for it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl perl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /tmp/bng.tgz \
+        "https://github.com/RuleWorld/bionetgen/releases/download/BioNetGen-${BNG_VERSION}/BioNetGen-${BNG_VERSION}-linux.tar.gz" \
+    && echo "${BNG_SHA256}  /tmp/bng.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/bng.tgz -C /opt \
+    && rm /tmp/bng.tgz \
+    && test -x "/opt/BioNetGen-${BNG_VERSION}/bin/run_network" \
+    && perl "/opt/BioNetGen-${BNG_VERSION}/BNG2.pl" -v | grep -q "BioNetGen version ${BNG_VERSION}"
+
+# An absolute BNGPATH: a relative one fails the tests that run BNG2.pl from
+# another directory.
+ENV BNGPATH=/opt/BioNetGen-${BNG_VERSION}

@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"  # weekly: bngsim main moves, and the smoke run follows it
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install pytest==8.3.5 ruff==0.14.0
+      - run: python -m ruff check .
+      - run: python -m pytest -q tests
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: hadolint
+        run: |
+          for f in images/Dockerfile images/Dockerfile.bionetgen; do
+            docker run --rm -i hadolint/hadolint:v2.12.0 hadolint --ignore DL3008 --ignore DL3013 - < "$f"
+          done
+
+  images:
+    name: build the images, check inside them
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest==8.3.5
+      - run: python bngsim_docker.py build --bionetgen
+      - name: check the base image
+        env:
+          BNGSIM_DOCKER_IMAGE: bngsim-linux-amd64:latest
+        run: python -m pytest -q -rs tests/test_container.py
+      - name: check the BioNetGen image
+        env:
+          BNGSIM_DOCKER_IMAGE: bngsim-linux-bionetgen:latest
+          BNGSIM_DOCKER_ARCH: amd64
+        run: python -m pytest -q -rs tests/test_container.py
+      - name: save the base image for the smoke run
+        run: docker save bngsim-linux-amd64:latest | gzip > base.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base-image
+          path: base.tar.gz
+          retention-days: 1
+
+  smoke:
+    name: bngsim main, built and tested in the image
+    runs-on: ubuntu-latest
+    needs: images
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: lanl/bngsim
+          path: bngsim
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          name: base-image
+      - run: gunzip -c base.tar.gz | docker load
+      - name: a few files through the CLI
+        run: |
+          python bngsim_docker.py test --tree bngsim --out smoke \
+            --tests python/tests/test_version_consistency.py python/tests/test_method_normalization.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: smoke/
+          retention-days: 7
+
+  arm64:
+    name: the arm64 image
+    runs-on: ubuntu-24.04-arm
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest==8.3.5
+      - run: python bngsim_docker.py build --arch arm64
+      - env:
+          BNGSIM_DOCKER_IMAGE: bngsim-linux-arm64:latest
+        run: python -m pytest -q -rs tests/test_container.py

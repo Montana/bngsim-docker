@@ -1,0 +1,80 @@
+# bngsim's Linux test images, and a run of a bngsim tree's tests in one.
+#
+# Build (the BioNetGen image is built on the amd64 one, so build that first):
+#   docker compose build linux-amd64 && docker compose build linux-bionetgen
+#   docker compose build linux-arm64
+#
+# Run a tree's tests (the tree is mounted read-only and copied inside):
+#   BNGSIM_TREE=~/work/bngsim docker compose run --rm suite
+#   BNGSIM_TREE=~/work/bngsim docker compose run --rm suite python/tests/test_x.py
+#   BNGSIM_TREE=~/work/bngsim docker compose run --rm suite-bionetgen
+#   BNGSIM_TREE=~/work/bngsim docker compose run --rm shell
+#
+# Logs go to ./out (build.log, pytest.log). WORKERS sets pytest-xdist's workers.
+
+x-run: &run
+  mem_limit: 10g
+  working_dir: /src
+  environment:
+    WORKERS: ${WORKERS:-3}
+    BUILD_JOBS: ${BUILD_JOBS:-2}
+  volumes:
+    - ${BNGSIM_TREE:-/set-BNGSIM_TREE-to-a-bngsim-checkout}:/tree:ro
+    - ./out:/out
+    - ./scripts:/scripts:ro
+  entrypoint: ["bash", "/scripts/container-test.sh"]
+
+services:
+  linux-amd64:
+    image: bngsim-linux-amd64:latest
+    platform: linux/amd64
+    build:
+      context: images
+      dockerfile: Dockerfile
+    profiles: ["build"]
+
+  linux-arm64:
+    image: bngsim-linux-arm64:latest
+    platform: linux/arm64
+    build:
+      context: images
+      dockerfile: Dockerfile
+    profiles: ["build"]
+
+  linux-bionetgen:
+    image: bngsim-linux-bionetgen:latest
+    platform: linux/amd64
+    build:
+      context: images
+      dockerfile: Dockerfile.bionetgen
+      args:
+        BASE: bngsim-linux-amd64:latest
+    profiles: ["build"]
+
+  suite:
+    <<: *run
+    image: bngsim-linux-amd64:latest
+    platform: linux/amd64
+
+  suite-arm64:
+    <<: *run
+    image: bngsim-linux-arm64:latest
+    platform: linux/arm64
+
+  suite-bionetgen:
+    <<: *run
+    image: bngsim-linux-bionetgen:latest
+    platform: linux/amd64
+
+  shell:
+    <<: *run
+    image: bngsim-linux-amd64:latest
+    platform: linux/amd64
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        mkdir -p /src && tar -C /tree --exclude=./.venv --exclude=./build --exclude=./.git
+        -cf - . | tar -C /src -xf - && cd /src && exec bash
+    stdin_open: true
+    tty: true
