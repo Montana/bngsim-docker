@@ -236,11 +236,12 @@ def compare_failures(branch: list[str], on_main: list[str]) -> tuple[list[str], 
 
 
 def sh(cmd: list[str], *, dry: bool, timeout: float | None = None,
-       capture: bool = True) -> subprocess.CompletedProcess:
+       capture: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     print("+ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     if dry:
         return subprocess.CompletedProcess(cmd, 0, "", "")
-    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout,
+                          env=None if env is None else {**os.environ, **env})
 
 
 def probe(image: str, arch: str, *, dry: bool, wait: float = 90.0) -> bool:
@@ -363,8 +364,15 @@ class Where:
 PRIVATE_REFS = "refs/bngsim-docker"  # where --pr and --merge-main fetch to, apart from the tree's own refs
 
 
-def _git(tree: Path, *args: str, dry: bool) -> subprocess.CompletedProcess:
-    return sh(["git", "-C", str(tree), *args], dry=dry)
+def _git(tree: Path, *args: str, dry: bool, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    return sh(["git", "-C", str(tree), *args], dry=dry, env=env)
+
+
+# git asks who merges even when nothing is committed (--no-commit), and fails
+# where no name is set or can be guessed, as on CI's runners and in containers.
+# The merge is never committed, so this name is recorded nowhere.
+MERGE_IDENTITY = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
+                  for what, value in (("NAME", "bngsim-docker"), ("EMAIL", "bngsim-docker@localhost"))}
 
 
 @contextlib.contextmanager
@@ -372,8 +380,8 @@ def prepared_tree(tree: Path, *, pr: int | None = None, merge_main: bool = False
                   remote: str = "origin", dry: bool = False) -> Iterator[Path]:
     """The tree to copy into the container: `tree` itself, or, with `pr` or
     `merge_main`, a worktree of its repository at the pull request's head (or
-    the tree's HEAD), merged with `remote`'s main if asked (left uncommitted:
-    no author is needed). The worktree is in a scratch directory and removed
+    the tree's HEAD), merged with `remote`'s main if asked (left uncommitted,
+    so the name it is merged under, MERGE_IDENTITY, is recorded nowhere). The worktree is in a scratch directory and removed
     on the way out, whatever happens."""
     if pr is None and not merge_main:
         yield tree
@@ -405,7 +413,7 @@ def prepared_tree(tree: Path, *, pr: int | None = None, merge_main: bool = False
             raise SystemExit(f"cannot check {ref} out: {r.stderr.strip()}")
         try:
             if merge_main:
-                r = _git(wt, "merge", "--quiet", "--no-commit", "--no-ff", main, dry=dry)
+                r = _git(wt, "merge", "--quiet", "--no-commit", "--no-ff", main, dry=dry, env=MERGE_IDENTITY)
                 if r.returncode != 0:
                     conflicts = _git(wt, "diff", "--name-only", "--diff-filter=U", dry=dry).stdout.split()
                     _git(wt, "merge", "--abort", dry=dry)

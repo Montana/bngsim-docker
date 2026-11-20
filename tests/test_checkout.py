@@ -4,6 +4,7 @@ and the bng2 command (its docker command line, and a dry run)."""
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -19,9 +20,14 @@ import bngsim_docker as bd  # noqa: E402
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
 
+IDENTITY = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
+            for what, value in (("NAME", "t"), ("EMAIL", "t@example.invalid"))}
+
+
 def git(cwd: Path, *args: str) -> str:
-    r = subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-                        "-c", "init.defaultBranch=main", *args], capture_output=True, text=True)
+    """git for the fixtures, with its own identity (the tool's runs have none)."""
+    r = subprocess.run(["git", "-C", str(cwd), "-c", "init.defaultBranch=main", *args],
+                       capture_output=True, text=True, env={**os.environ, **IDENTITY})
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
 
@@ -79,6 +85,16 @@ def test_merge_main_tests_the_commit_merged_with_main(repos, capsys):
     assert not t.exists() and worktrees(tree) == 1
     assert (tree / "mine.txt").read_text() == "an uncommitted edit\n"  # the tree is untouched
     assert git(tree, "rev-parse", "--abbrev-ref", "HEAD") == "mine"
+
+
+def test_merge_main_needs_no_identity(repos, monkeypatch):
+    """CI's runners have no git name set and none to guess: git refuses a merge,
+    even one never committed, unless it is given one."""
+    _, tree = repos
+    for k in IDENTITY:
+        monkeypatch.setenv(k, "")
+    with bd.prepared_tree(tree, merge_main=True) as t:
+        assert (t / "main.txt").is_file()
 
 
 def test_pr_tests_the_pull_request_s_head(repos):
