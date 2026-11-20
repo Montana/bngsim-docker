@@ -8,8 +8,31 @@ A fix that depends on rounding can pass on Apple Silicon and fail on CI's x86-64
 
 The images hold only the toolchain. Each run copies a bngsim tree in, without its `.venv`, `build`, `.git`, logs and compiled cores, and builds it there with `uv sync`. So the build is the container's own, and nothing is written back to the tree.
 
+## How a run goes
+
+```mermaid
+flowchart TD
+    D["Debian · everyday Linux checks"]
+    U["Ubuntu · reproduce BNGsim CI"]
+    B["BioNetGen · BNG2.pl and NFsim parity tests"]
+    D --> I["Build the selected toolchain image"]
+    U --> I
+    B --> I
+
+    S["Local BNGsim tree, PR head, or merge with main"] --> C["Copy source to /src"]
+    I --> R["Build BNGsim in Linux with uv sync"]
+    C --> R
+    R --> P["Run pytest on the suite or selected tests"]
+
+    P -->|"test"| T["Check failures against known-failures.txt"]
+    P -->|"compare"| M["Rerun only the failing tests on main in the same image"]
+    T --> K["Report known and unexpected failures"]
+    M --> V["Report which failures also occur on main and which are branch-only"]
+```
+
 ## Contents
 
+- [How a run goes](#how-a-run-goes)
 - [The images](#the-images)
 - [Which image for which question](#which-image-for-which-question)
 - [Quick start](#quick-start)
