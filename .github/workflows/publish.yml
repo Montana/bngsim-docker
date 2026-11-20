@@ -143,7 +143,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   bngsim-build:
-    name: bngsim image, build, check and push (${{ matrix.arch }})
+    name: bngsim and jupyter images, build, check and push (${{ matrix.arch }})
     needs: release
     strategy:
       fail-fast: true
@@ -152,9 +152,11 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
             image: bngsim-run:latest
+            jupyter: bngsim-jupyter:latest
           - arch: arm64
             runner: ubuntu-24.04-arm
             image: bngsim-run-arm64:latest
+            jupyter: bngsim-jupyter-arm64:latest
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.release.outputs.version }}
@@ -171,9 +173,11 @@ jobs:
           extra=()
           if [ "$FRESH" = true ]; then extra+=(--fresh); fi
           python bngsim_docker.py build --kind bngsim --arch ${{ matrix.arch }} --bngsim-version "$VERSION" "${extra[@]}"
-      - name: check inside against the exact solution (BNGL, SSA, SBML, Antimony)
+          python bngsim_docker.py build --kind bngsim-jupyter --arch ${{ matrix.arch }} --bngsim-version "$VERSION"
+      - name: check inside against exact answers (BNGL, SSA, SBML, Antimony, the tour notebook)
         env:
           BNGSIM_RUN_IMAGE: ${{ matrix.image }}
+          BNGSIM_JUPYTER_IMAGE: ${{ matrix.jupyter }}
           BNGSIM_DOCKER_ARCH: ${{ matrix.arch }}
         run: python -m pytest -q -rs tests/test_bngsim_image.py
       - uses: docker/login-action@v3
@@ -184,9 +188,11 @@ jobs:
         run: |
           docker tag "${{ matrix.image }}" "montanamendy/bngsim:${VERSION}-${{ matrix.arch }}"
           docker push -q "montanamendy/bngsim:${VERSION}-${{ matrix.arch }}"
+          docker tag "${{ matrix.jupyter }}" "montanamendy/bngsim:${VERSION}-jupyter-${{ matrix.arch }}"
+          docker push -q "montanamendy/bngsim:${VERSION}-jupyter-${{ matrix.arch }}"
 
   bngsim-tags:
-    name: bngsim image, multi-architecture tags
+    name: bngsim and jupyter images, multi-architecture tags
     needs: [release, bngsim-build]
     runs-on: ubuntu-latest
     env:
@@ -201,6 +207,8 @@ jobs:
         run: |
           docker buildx imagetools create -t "montanamendy/bngsim:${VERSION}" -t montanamendy/bngsim:latest \
             "montanamendy/bngsim:${VERSION}-amd64" "montanamendy/bngsim:${VERSION}-arm64"
+          docker buildx imagetools create -t "montanamendy/bngsim:${VERSION}-jupyter" -t montanamendy/bngsim:jupyter \
+            "montanamendy/bngsim:${VERSION}-jupyter-amd64" "montanamendy/bngsim:${VERSION}-jupyter-arm64"
       - name: both architectures name this repository as their source
         env:
           CHECK: |
@@ -213,6 +221,6 @@ jobs:
             print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
             sys.exit(1 if bad or len(images) != 2 else 0)
         run: |
-          for tag in latest "${VERSION}"; do
+          for tag in latest "${VERSION}" jupyter "${VERSION}-jupyter"; do
             docker buildx imagetools inspect "montanamendy/bngsim:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim:${tag}"
           done
