@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = (ROOT / "images" / "Dockerfile").read_text(encoding="utf-8")
 BNG = (ROOT / "images" / "Dockerfile.bionetgen").read_text(encoding="utf-8")
 UBUNTU = (ROOT / "images" / "Dockerfile.ubuntu").read_text(encoding="utf-8")
+RUN_IMAGE = (ROOT / "images" / "Dockerfile.bngsim").read_text(encoding="utf-8")
 
 
 def _arg(text: str, name: str) -> str:
@@ -117,7 +118,7 @@ def test_both_images_compile_through_ccache(text):
     assert re.search(r"^\s+ccache \\$", text, re.M)
 
 
-@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen"])
+@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen", "Dockerfile.bngsim"])
 def test_each_image_keeps_a_copy_of_its_dockerfile(name):
     text = (ROOT / "images" / name).read_text(encoding="utf-8")
     assert f"COPY {name} /etc/bngsim-docker/{name}" in text
@@ -143,9 +144,34 @@ def test_on_arm64_bngsim_installs_without_antimony():
     assert script.index(": > /out/build.log") < script.index('"${SKIP[@]}" >> /out/build.log')
 
 
-@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen"])
+@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen", "Dockerfile.bngsim"])
 def test_each_image_names_its_source(name):
     """Docker Hub links an image to the repository its OCI source label names."""
     text = (ROOT / "images" / name).read_text(encoding="utf-8")
     assert 'org.opencontainers.image.source="https://github.com/Montana/bngsim-docker"' in text
     assert "org.opencontainers.image.description=" in text
+
+
+def test_the_bngsim_image_pins_bngsim_python_and_bionetgen_as_the_others_do():
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _arg(RUN_IMAGE, "BNGSIM_VERSION"))
+    assert _arg(RUN_IMAGE, "PYTHON_VERSION") == _arg(BASE, "PYTHON_VERSION")
+    # The same BioNetGen, checked against the same sha256, as the BioNetGen test image.
+    assert _arg(RUN_IMAGE, "BNG_VERSION") == _arg(BNG, "BNG_VERSION")
+    assert _arg(RUN_IMAGE, "BNG_SHA256") == _arg(BNG, "BNG_SHA256")
+    assert "hashlib.sha256(data).hexdigest() == '${BNG_SHA256}'" in RUN_IMAGE
+    m = re.search(r"^ENV BNGPATH=(\S+)$", RUN_IMAGE, re.M)
+    assert m and m.group(1).startswith("/opt/")
+
+
+def test_the_bngsim_image_installs_the_release_it_names_and_checks_it():
+    assert "bngsim[${extras}]==${BNGSIM_VERSION}" in RUN_IMAGE
+    assert "bngsim.__version__ == '${BNGSIM_VERSION}'" in RUN_IMAGE
+    # No antimony wheel for Linux aarch64: only amd64 asks for it.
+    assert 'if [ "$TARGETARCH" != arm64 ]; then extras="${extras},antimony"; fi' in RUN_IMAGE
+
+
+@pytest.mark.parametrize("package", ["perl", "libexpat1", "gcc"])
+def test_the_bngsim_image_has_what_running_bngsim_needs(package):
+    """perl for BNG2.pl, libexpat1 for libsbml (the slim base leaves it out), gcc for compiled RHS."""
+    final = RUN_IMAGE.split("# ── the image", 1)[1]
+    assert package in final

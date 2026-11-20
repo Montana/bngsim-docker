@@ -74,7 +74,7 @@ def test_the_run_mounts_the_copy_the_logs_the_scripts_and_the_cache():
 
 def test_each_image_has_its_own_cache():
     """The images' compilers differ, so their objects must not mix."""
-    names = {bd.ccache_volume(arch, kind) for arch in ("amd64", "arm64") for kind in bd.KINDS}
+    names = {bd.ccache_volume(arch, kind) for arch in ("amd64", "arm64") for kind in bd.TESTING}
     assert len(names) == 6
 
 
@@ -376,7 +376,7 @@ def test_every_name_clean_may_remove_is_one_the_tool_makes():
     assert volumes == {"bngsim-ccache-debian-amd64", "bngsim-ccache-debian-arm64", "bngsim-ccache-ubuntu-amd64",
                        "bngsim-ccache-ubuntu-arm64", "bngsim-ccache-bionetgen-amd64"}
     assert repos == {"bngsim-linux-amd64", "bngsim-linux-arm64", "bngsim-linux-ubuntu",
-                     "bngsim-linux-ubuntu-arm64", "bngsim-linux-bionetgen"}
+                     "bngsim-linux-ubuntu-arm64", "bngsim-linux-bionetgen", "bngsim-run", "bngsim-run-arm64"}
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert all(v in volumes for v in re.findall(r"name: (bngsim-ccache-\S+)", compose))
 
@@ -544,3 +544,26 @@ def test_a_fresh_build_pulls_the_distribution_base_but_not_the_local_one():
     # BioNetGen's base is the Debian image just built here: pulling it would ask Docker Hub for it.
     assert "--pull" not in bng and "--no-cache" in bng
     assert not {"--pull", "--no-cache"} & set(bd.build_commands("amd64", "ubuntu")[0])
+
+
+@pytest.mark.parametrize("cmd", ["test", "compare"])
+def test_the_bngsim_image_is_not_one_to_test_a_tree_in(cmd, tmp_path):
+    args = [cmd, "--tree", str(tmp_path), "--kind", "bngsim", "--dry-run"] + (["--main", str(tmp_path)] if cmd == "compare" else [])
+    with pytest.raises(SystemExit, match="does not build a tree"):
+        bd.main(args)
+
+
+def test_the_bngsim_image_s_names():
+    assert bd.image_name("amd64", "bngsim") == "bngsim-run:latest"
+    assert bd.image_name("arm64", "bngsim") == "bngsim-run-arm64:latest"
+    (cmd,) = bd.build_commands("arm64", "bngsim")
+    assert cmd[cmd.index("-f") + 1].endswith("Dockerfile.bngsim")
+
+
+def test_the_bngsim_image_installs_the_release_asked_for():
+    (cmd,) = bd.build_commands("amd64", "bngsim", bngsim_version="0.18.0")
+    assert cmd[cmd.index("--build-arg") + 1] == "BNGSIM_VERSION=0.18.0"
+    (default,) = bd.build_commands("amd64", "bngsim")
+    assert "--build-arg" not in default
+    with pytest.raises(SystemExit, match="for --kind bngsim"):
+        bd.build_commands("amd64", "debian", bngsim_version="0.18.0")

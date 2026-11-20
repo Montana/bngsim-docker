@@ -1,0 +1,19 @@
+# A -> 0 at rate k: A(t) = A0 exp(-k t), so the ODE run can be checked exactly.
+begin model
+begin parameters
+  k  0.5
+  A0 100
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin species
+  A() A0
+end species
+begin observables
+  Molecules Atot A()
+end observables
+begin reaction rules
+  A() -> 0 k
+end reaction rules
+end model

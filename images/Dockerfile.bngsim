@@ -1,0 +1,84 @@
+# bngsim, ready to run: the released package from PyPI, with BioNetGen 2.9.3
+# so BNGL models load, and a C compiler for bngsim's compiled right-hand sides.
+# For using bngsim, not for testing a tree (the other images do that).
+#
+#   docker run --rm -v "$PWD":/work montanamendy/bngsim python model_script.py
+#
+# amd64 installs PyPI's manylinux wheel, with antimony. arm64 has no bngsim or
+# antimony wheel on PyPI: bngsim is built here from its sdist (with KLU), in a
+# stage of its own, so the image carries no build tools; Antimony models are
+# not supported there.
+#
+#   python bngsim_docker.py build --kind bngsim                # bngsim-run:latest
+#   python bngsim_docker.py build --kind bngsim --arch arm64   # bngsim-run-arm64:latest
+ARG PYTHON_VERSION=3.12.16
+
+# ── wheels: bngsim and its extras, and BioNetGen ─────────────────────────────
+FROM python:${PYTHON_VERSION}-slim-bookworm AS wheels
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG BNGSIM_VERSION=0.17.2
+ARG BNG_VERSION=2.9.3
+# sha256 of BioNetGen-2.9.3-linux.tar.gz, the RuleWorld/bionetgen release asset.
+ARG BNG_SHA256=b85743d422aa3fd112aceb3725dd1b1f2ff1ad829d20d71682680426582bcb5d
+ARG TARGETARCH
+
+# arm64 builds bngsim from source: a compiler, CMake, Ninja and KLU.
+RUN if [ "$TARGETARCH" = arm64 ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends build-essential cmake ninja-build libsuitesparse-dev git \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN extras="pandas,xarray,hdf5"; \
+    if [ "$TARGETARCH" != arm64 ]; then extras="${extras},antimony"; fi; \
+    echo "bngsim[${extras}]==${BNGSIM_VERSION}" > /requirement.txt \
+    && CMAKE_BUILD_PARALLEL_LEVEL=2 pip wheel --no-cache-dir --wheel-dir /wheels -r /requirement.txt
+
+# BioNetGen, checked against its sha256. BNG2.pl is Perl and runs on either
+# architecture; it is what turns a .bngl file into a network for bngsim.
+RUN python -c "import hashlib, urllib.request; \
+url = 'https://github.com/RuleWorld/bionetgen/releases/download/BioNetGen-${BNG_VERSION}/BioNetGen-${BNG_VERSION}-linux.tar.gz'; \
+data = urllib.request.urlopen(url, timeout=300).read(); \
+assert hashlib.sha256(data).hexdigest() == '${BNG_SHA256}', 'BioNetGen sha256 does not match'; \
+open('/bng.tgz', 'wb').write(data)"
+RUN mkdir -p /opt && tar -xzf /bng.tgz -C /opt && rm /bng.tgz
+
+# ── the image ────────────────────────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim-bookworm
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG BNGSIM_VERSION=0.17.2
+ARG BNG_VERSION=2.9.3
+ARG TARGETARCH
+
+# perl: BNG2.pl. gcc and libc6-dev: bngsim compiles a model's right-hand side
+# for speed when a C compiler is there. libexpat1: python-libsbml's XML parser
+# (the slim image leaves it out, and every SBML load fails without it).
+# libklu1 and liblapack3: the KLU and LAPACK the arm64 build links (the amd64
+# wheel carries its own).
+# $extra is split on purpose: none, or two package names (SC2086).
+# hadolint ignore=SC2086
+RUN extra=""; if [ "$TARGETARCH" = arm64 ]; then extra="libklu1 liblapack3"; fi; \
+    apt-get update \
+    && apt-get install -y --no-install-recommends perl gcc libc6-dev libexpat1 $extra \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=wheels /opt/BioNetGen-${BNG_VERSION} /opt/BioNetGen-${BNG_VERSION}
+ENV BNGPATH=/opt/BioNetGen-${BNG_VERSION}
+
+RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
+    --mount=type=bind,from=wheels,source=/requirement.txt,target=/requirement.txt \
+    pip install --no-cache-dir --no-index --find-links /wheels -r /requirement.txt \
+    && python -c "import bngsim; assert bngsim.__version__ == '${BNGSIM_VERSION}', bngsim.__version__" \
+    && perl "$BNGPATH/BNG2.pl" -v | grep -q "BioNetGen version ${BNG_VERSION}"
+
+# Where the image comes from, and what it is for: Docker Hub and other tools
+# read these (the OCI image annotations) to link the image to its source.
+LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker" \
+      org.opencontainers.image.description="bngsim, the BioNetGen simulation engine from Los Alamos National Laboratory, ready to run: BNGL, SBML and Antimony models, ODE and stochastic simulation"
+
+# A copy of this file, which the CLI compares with the repository's to say when
+# the image is older than its Dockerfile. Last, so no other layer depends on
+# it.
+COPY Dockerfile.bngsim /etc/bngsim-docker/Dockerfile.bngsim
+WORKDIR /work
+CMD ["python"]

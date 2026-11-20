@@ -1,6 +1,9 @@
 name: publish
 
-# Builds the images and pushes them to Docker Hub (montanamendy/bngsim-linux):
+# Builds the images and pushes them to Docker Hub: the test images to
+# montanamendy/bngsim-linux, and bngsim installed, to run it, to montanamendy/bngsim
+# (tagged by bngsim release, the newest on PyPI, and latest; amd64 and arm64).
+# The test images:
 # when the Dockerfiles change on main, weekly from a freshly pulled base (the
 # distributions' security updates), and on demand. Each image is checked
 # inside (tests/test_container.py) before it is pushed. Tags:
@@ -123,4 +126,93 @@ jobs:
         run: |
           for tag in latest debian ubuntu bionetgen "debian-${STAMP}" "ubuntu-${STAMP}" "bionetgen-${STAMP}"; do
             docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "${REPO}:${tag}"
+          done
+
+  # ── montanamendy/bngsim: bngsim installed, to run it ──────────────────────
+  release:
+    name: the bngsim release to publish
+    if: github.repository == 'Montana/bngsim-docker'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pypi.outputs.version }}
+    steps:
+      - id: pypi
+        run: |
+          version=$(curl -fsSL https://pypi.org/pypi/bngsim/json | python3 -c "import json, sys; print(json.load(sys.stdin)['info']['version'])")
+          echo "bngsim $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  bngsim-build:
+    name: bngsim image, build, check and push (${{ matrix.arch }})
+    needs: release
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            image: bngsim-run:latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            image: bngsim-run-arm64:latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest==8.3.5
+      - name: build
+        env:
+          FRESH: ${{ github.event_name == 'schedule' }}
+        run: |
+          extra=()
+          if [ "$FRESH" = true ]; then extra+=(--fresh); fi
+          python bngsim_docker.py build --kind bngsim --arch ${{ matrix.arch }} --bngsim-version "$VERSION" "${extra[@]}"
+      - name: check inside against the exact solution (BNGL, SSA, SBML, Antimony)
+        env:
+          BNGSIM_RUN_IMAGE: ${{ matrix.image }}
+          BNGSIM_DOCKER_ARCH: ${{ matrix.arch }}
+        run: python -m pytest -q -rs tests/test_bngsim_image.py
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ env.HUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: push
+        run: |
+          docker tag "${{ matrix.image }}" "montanamendy/bngsim:${VERSION}-${{ matrix.arch }}"
+          docker push -q "montanamendy/bngsim:${VERSION}-${{ matrix.arch }}"
+
+  bngsim-tags:
+    name: bngsim image, multi-architecture tags
+    needs: [release, bngsim-build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ env.HUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: tag
+        run: |
+          docker buildx imagetools create -t "montanamendy/bngsim:${VERSION}" -t montanamendy/bngsim:latest \
+            "montanamendy/bngsim:${VERSION}-amd64" "montanamendy/bngsim:${VERSION}-arm64"
+      - name: both architectures name this repository as their source
+        env:
+          CHECK: |
+            import json, sys
+            d = json.load(sys.stdin)
+            images = [d] if "config" in d else list(d.values())
+            bad = [i.get("architecture") for i in images
+                   if (i.get("config", {}).get("Labels") or {}).get("org.opencontainers.image.source")
+                   != "https://github.com/Montana/bngsim-docker"]
+            print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
+            sys.exit(1 if bad or len(images) != 2 else 0)
+        run: |
+          for tag in latest "${VERSION}"; do
+            docker buildx imagetools inspect "montanamendy/bngsim:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim:${tag}"
           done

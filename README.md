@@ -2,11 +2,41 @@
 
 # bngsim-docker
 
-Docker images and a small CLI for running [bngsim](https://github.com/lanl/bngsim)'s tests on Linux.
+Docker images and a small CLI for running [bngsim](https://github.com/lanl/bngsim)'s tests on Linux, and an image for running bngsim itself.
+
+**Just want to run bngsim?** [`montanamendy/bngsim`](https://hub.docker.com/r/montanamendy/bngsim) has it installed with BioNetGen, so a BNGL model loads with no Perl or BioNetGen to set up. See [Run bngsim](#run-bngsim).
 
 A fix that depends on rounding can pass on Apple Silicon and fail on CI's x86-64 Linux. These images let a bngsim tree be built from source and tested on Linux, on a Mac or anywhere Docker runs, before its pull request is opened. The Debian image is the one [bngsim-preflights](https://github.com/Montana/bngsim-preflights)' `linux_check.py` runs (`bngsim-linux-amd64:latest`), written down so it can be rebuilt the same way.
 
 The images hold only the toolchain. Each run copies a bngsim tree in, without its `.venv`, `build`, `.git`, logs and compiled cores, and builds it there with `uv sync`. So the build is the container's own, and nothing is written back to the tree.
+
+## Run bngsim
+
+[bngsim](https://github.com/lanl/bngsim), the BioNetGen simulation engine from Los Alamos National Laboratory, installed and ready: the release from PyPI, with BioNetGen 2.9.3 (so `.bngl` models load through BNG2.pl, with Perl and `$BNGPATH` set up), pandas, xarray and h5py, and a C compiler for bngsim's compiled right-hand sides. It reads BNGL, SBML, Antimony and BioNetGen `.net` models, and runs ODE and stochastic simulations.
+
+```bash
+docker run --rm -v "$PWD":/work montanamendy/bngsim python simulate.py
+docker run --rm -it -v "$PWD":/work montanamendy/bngsim        # a Python prompt, your files in /work
+```
+
+with, for example, `simulate.py`:
+
+```python
+import bngsim
+
+model = bngsim.Model.load("model.bngl")          # or .xml (SBML), .ant (Antimony), .net
+result = bngsim.Simulator(model, method="ode").run(t_span=(0, 10), n_points=101)
+print(result.observables["Atot"])
+```
+
+| Tag | |
+|---|---|
+| `latest`, `0.17.2`, ... | a bngsim release, amd64 and arm64 |
+| `0.17.2-amd64`, `0.17.2-arm64` | one architecture |
+
+On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Linux: the image builds bngsim from its source release, and Antimony models are not supported there. Everything else is the same.
+
+Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and (amd64) an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
 
 ## How a run goes
 
@@ -17,6 +47,7 @@ This is how a run goes when using `bngsim-docker`:
 
 ## Contents
 
+- [Run bngsim](#run-bngsim)
 - [How a run goes](#how-a-run-goes)
 - [The images](#the-images)
 - [Which image for which question](#which-image-for-which-question)

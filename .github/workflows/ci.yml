@@ -31,7 +31,7 @@ jobs:
         run: shellcheck scripts/*.sh
       - name: hadolint
         run: |
-          for f in images/Dockerfile images/Dockerfile.ubuntu images/Dockerfile.bionetgen; do
+          for f in images/Dockerfile images/Dockerfile.ubuntu images/Dockerfile.bionetgen images/Dockerfile.bngsim; do
             docker run --rm -i hadolint/hadolint:v2.12.0 hadolint --ignore DL3008 --ignore DL3013 - < "$f"
           done
 
@@ -60,6 +60,12 @@ jobs:
           BNGSIM_DOCKER_IMAGE: bngsim-linux-bionetgen:latest
           BNGSIM_DOCKER_ARCH: amd64
         run: python -m pytest -q -rs tests/test_container.py
+      - run: python bngsim_docker.py build --kind bngsim
+      - name: check the bngsim image against the exact solution (BNGL, SSA, SBML, Antimony)
+        env:
+          BNGSIM_RUN_IMAGE: bngsim-run:latest
+          BNGSIM_DOCKER_ARCH: amd64
+        run: python -m pytest -q -rs tests/test_bngsim_image.py
       - name: save the base image for the smoke run
         run: docker save bngsim-linux-amd64:latest | gzip > base.tar.gz
       - uses: actions/upload-artifact@v4
@@ -139,3 +145,9 @@ jobs:
       - env:
           BNGSIM_DOCKER_IMAGE: bngsim-linux-arm64:latest
         run: python -m pytest -q -rs tests/test_container.py
+      - name: build the bngsim image (bngsim from its sdist, as PyPI has no aarch64 wheel)
+        run: python bngsim_docker.py build --kind bngsim --arch arm64
+      - env:
+          BNGSIM_RUN_IMAGE: bngsim-run-arm64:latest
+          BNGSIM_DOCKER_ARCH: arm64
+        run: python -m pytest -q -rs tests/test_bngsim_image.py
