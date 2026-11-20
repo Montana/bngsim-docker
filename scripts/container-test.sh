@@ -98,7 +98,7 @@ if [ -f ci/libpython_on_loader_path.sh ]; then
     rm -f "$GITHUB_ENV"
 fi
 .venv/bin/python -c "import bngsim, platform; print(bngsim.__version__, platform.machine(), platform.libc_ver())"
-# -rfEp: the failed, errored and passed ids, so the CLI can say which standing
+# -rfEp: the failed, errored and passed ids (junit.xml: each failure's message), so the CLI can say which standing
 # failure passed.
-.venv/bin/python -m pytest -q -p no:cacheprovider -n "$WORKERS" -rfEp "$@" > /out/pytest.log 2>&1 || true
+.venv/bin/python -m pytest -q -p no:cacheprovider -n "$WORKERS" -rfEp --junitxml=/out/junit.xml "$@" > /out/pytest.log 2>&1 || true
 grep -E '^FAILED|^ERROR|[0-9]+ (passed|failed)' /out/pytest.log | tail -40

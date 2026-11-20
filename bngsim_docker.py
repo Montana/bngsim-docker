@@ -138,6 +138,7 @@ class Run:
     summary: str
     failed: list[str] = field(default_factory=list)
     passed: list[str] = field(default_factory=list)
+    messages: dict[str, str] = field(default_factory=dict)  # failed id -> its error, from junit.xml
 
 
 def parse(output: str) -> Run:
@@ -147,6 +148,46 @@ def parse(output: str) -> Run:
     passed = [m.group(1) for m in re.finditer(r"^PASSED (\S+)", output, re.M)]
     rows = [ln.strip("= ") for ln in output.splitlines() if re.search(r"\d+ (passed|failed)", ln)]
     return Run(rows[-1] if rows else "", list(dict.fromkeys(failed)), list(dict.fromkeys(passed)))
+
+
+def junit_key(test_id: str) -> tuple[str, str]:
+    """A pytest id as its JUnit XML (classname, name):
+    python/tests/test_a.py::TestB::test_c[x] -> (python.tests.test_a.TestB, test_c[x])."""
+    path, *rest = test_id.split("::")
+    module = path[:-3] if path.endswith(".py") else path
+    return ".".join([module.replace("/", "."), *rest[:-1]]), rest[-1] if rest else ""
+
+
+def junit_messages(path: Path) -> dict[tuple[str, str], str]:
+    """Each failed or errored test's message, from pytest's --junitxml file
+    ({} if there is none, as from an older script)."""
+    import xml.etree.ElementTree as ET  # noqa: N817 (the standard library's own spelling)
+
+    if not path.is_file():
+        return {}
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return {}
+    out = {}
+    for case in root.iter("testcase"):
+        for tag in ("failure", "error"):
+            el = case.find(tag)
+            if el is not None:
+                out[(case.get("classname", ""), case.get("name", ""))] = el.get("message", "") or (el.text or "")
+                break
+    return out
+
+
+# The arm64 images install bngsim without antimony (no Linux aarch64 wheel): a
+# test whose only failure is that antimony is missing is the image's, there.
+NO_ANTIMONY = re.compile(r"The 'antimony' package is required|No module named 'antimony'")
+
+
+def needs_antimony(failed: list[str], messages: dict[str, str]) -> tuple[list[str], list[str]]:
+    """(failures that are antimony missing, the rest)."""
+    missing = [t for t in failed if NO_ANTIMONY.search(messages.get(t, ""))]
+    return missing, [t for t in failed if t not in missing]
 
 
 EMULATED = "emulated-only"  # the tag that limits an entry to an emulated run
@@ -375,89 +416,186 @@ MERGE_IDENTITY = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
                   for what, value in (("NAME", "bngsim-docker"), ("EMAIL", "bngsim-docker@localhost"))}
 
 
-@contextlib.contextmanager
-def prepared_tree(tree: Path, *, pr: int | None = None, merge_main: bool = False,
-                  remote: str = "origin", dry: bool = False) -> Iterator[Path]:
-    """The tree to copy into the container: `tree` itself, or, with `pr` or
-    `merge_main`, a worktree of its repository at the pull request's head (or
-    the tree's HEAD), merged with `remote`'s main if asked (left uncommitted,
-    so the name it is merged under, MERGE_IDENTITY, is recorded nowhere). The worktree is in a scratch directory and removed
-    on the way out, whatever happens."""
-    if pr is None and not merge_main:
-        yield tree
-        return
-    tree = tree.resolve()
+def fetch_main(tree: Path, remote: str, *, dry: bool) -> str:
+    """Fetch `remote`'s main to a ref of this tool's own (the tree's branches and
+    origin/* stay where they were: --refmap= stops git updating them as well)."""
+    main = f"{PRIVATE_REFS}/main"
+    r = _git(tree, "fetch", "--quiet", "--refmap=", remote, f"+refs/heads/main:{main}", dry=dry)
+    if r.returncode != 0:
+        raise SystemExit(f"cannot fetch main from {remote}: {r.stderr.strip()}")
+    return main
+
+
+def _need_checkout(tree: Path, what: str, *, dry: bool) -> None:
     if not dry and subprocess.run(["git", "-C", str(tree), "rev-parse", "--git-dir"],
                                   capture_output=True).returncode != 0:
-        raise SystemExit(f"--pr and --merge-main need a git checkout: {tree} is none")
-    ref = "HEAD"
-    if pr is not None:
-        ref = f"{PRIVATE_REFS}/pr/{pr}"
-        r = _git(tree, "fetch", "--quiet", "--refmap=", remote, f"+refs/pull/{pr}/head:{ref}", dry=dry)
-        if r.returncode != 0:
-            raise SystemExit(f"cannot fetch pull request {pr} from {remote}: {r.stderr.strip()}")
-    elif not dry:
-        dirty = _git(tree, "status", "--porcelain", "--untracked-files=no", dry=False).stdout
-        if dirty.strip():
-            print(f"WARNING: {tree} has uncommitted changes to tracked files: --merge-main tests "
-                  "its commit, without them", file=sys.stderr, flush=True)
-    main = f"{PRIVATE_REFS}/main"
-    if merge_main:
-        r = _git(tree, "fetch", "--quiet", "--refmap=", remote, f"+refs/heads/main:{main}", dry=dry)
-        if r.returncode != 0:
-            raise SystemExit(f"cannot fetch main from {remote}: {r.stderr.strip()}")
+        raise SystemExit(f"{what}: {tree} is no git checkout")
+
+
+def short(tree: Path, ref: str) -> str:
+    return _git(tree, "rev-parse", "--short", ref, dry=False).stdout.strip()
+
+
+@contextlib.contextmanager
+def worktree_at(tree: Path, ref: str, *, dry: bool) -> Iterator[Path]:
+    """A worktree of `tree`'s repository at `ref`, in a scratch directory, removed
+    on the way out whatever happens. Only that worktree is ever removed."""
     with tempfile.TemporaryDirectory(prefix="bngsim-docker-wt-", ignore_cleanup_errors=True) as scratch:
         wt = Path(scratch) / "tree"
         r = _git(tree, "worktree", "add", "--quiet", "--detach", str(wt), ref, dry=dry)
         if r.returncode != 0:
             raise SystemExit(f"cannot check {ref} out: {r.stderr.strip()}")
         try:
-            if merge_main:
-                r = _git(wt, "merge", "--quiet", "--no-commit", "--no-ff", main, dry=dry, env=MERGE_IDENTITY)
-                if r.returncode != 0:
-                    conflicts = _git(wt, "diff", "--name-only", "--diff-filter=U", dry=dry).stdout.split()
-                    _git(wt, "merge", "--abort", dry=dry)
-                    raise SystemExit(f"{ref} does not merge with {remote}'s main: "
-                                     f"{', '.join(conflicts) or r.stdout.strip() or r.stderr.strip()}")
-            if not dry:
-                head = _git(wt, "rev-parse", "--short", "HEAD", dry=False).stdout.strip()
-                with_main = (f" merged with {remote}'s main "
-                             f"{_git(tree, 'rev-parse', '--short', main, dry=False).stdout.strip()}"
-                             if merge_main else "")
-                print(f"testing {'pull request ' + str(pr) + ' at ' if pr is not None else ''}{head}{with_main}",
-                      flush=True)
             yield wt
         finally:
-            # Only the worktree made here, inside the scratch directory, is removed.
             assert wt.parent == Path(scratch)
             _git(tree, "worktree", "remove", "--force", str(wt), dry=dry)
             _git(tree, "worktree", "prune", dry=dry)
 
 
-def bng2_command(model: Path, out: Path, image: str, args: list[str]) -> list[str]:
-    """BNG2.pl on `model`, its directory mounted read-only at /model, its output
-    and its log written to `out`, handed back to the caller's user."""
+def carry_uncommitted(tree: Path, wt: Path, *, dry: bool) -> list[str]:
+    """Bring the tree's uncommitted work into the worktree: its changes to tracked
+    files (a three-way apply, so main's changes merged in beside them are kept)
+    and its untracked files that are not ignored (a new test not yet added).
+    They are then staged in the worktree's own index, so the copy counts them as
+    tracked; the tree's index is not touched. Returns the untracked files."""
+    print(f"+ git -C {tree} diff --binary HEAD | git -C {wt} apply --3way", flush=True)
+    if dry:
+        return []
+    diff = subprocess.run(["git", "-C", str(tree), "diff", "--binary", "HEAD"], capture_output=True)
+    if diff.stdout:
+        r = subprocess.run(["git", "-C", str(wt), "apply", "--3way", "--whitespace=nowarn", "-"],
+                           input=diff.stdout, capture_output=True)
+        if r.returncode != 0:
+            raise SystemExit("the tree's uncommitted changes do not apply to the commit tested: "
+                             + r.stderr.decode(errors="replace").strip())
+    others = _git(tree, "ls-files", "--others", "--exclude-standard", "-z", dry=False).stdout
+    untracked = [f for f in others.split("\0") if f]
+    for f in untracked:
+        (wt / f).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(tree / f, wt / f, follow_symlinks=False)
+    _git(wt, "add", "--all", dry=False)
+    return untracked
+
+
+@contextlib.contextmanager
+def prepared_tree(tree: Path, *, pr: int | None = None, merge_main: bool = False, uncommitted: bool = False,
+                  remote: str = "origin", dry: bool = False) -> Iterator[Path]:
+    """The tree to copy into the container: `tree` itself, or, with `pr` or
+    `merge_main`, a worktree of its repository at the pull request's head (or
+    the tree's HEAD), merged with `remote`'s main if asked (left uncommitted,
+    so the name it is merged under, MERGE_IDENTITY, is recorded nowhere), with
+    the tree's uncommitted work carried in if `uncommitted`."""
+    if pr is None and not merge_main:
+        yield tree  # the tree as it stands, uncommitted work and all
+        return
+    if pr is not None and uncommitted:
+        raise SystemExit("--uncommitted carries the tree's own edits onto its own commit: not with --pr")
+    tree = tree.resolve()
+    _need_checkout(tree, "--pr and --merge-main need a git checkout", dry=dry)
+    ref = "HEAD"
+    if pr is not None:
+        ref = f"{PRIVATE_REFS}/pr/{pr}"
+        r = _git(tree, "fetch", "--quiet", "--refmap=", remote, f"+refs/pull/{pr}/head:{ref}", dry=dry)
+        if r.returncode != 0:
+            raise SystemExit(f"cannot fetch pull request {pr} from {remote}: {r.stderr.strip()}")
+    elif not dry and not uncommitted:
+        dirty = _git(tree, "status", "--porcelain", dry=False).stdout
+        if dirty.strip():
+            print(f"WARNING: {tree} has uncommitted changes or untracked files: --merge-main tests "
+                  "its commit, without them (--uncommitted carries them in)", file=sys.stderr, flush=True)
+    main = fetch_main(tree, remote, dry=dry) if merge_main else ""
+    with worktree_at(tree, ref, dry=dry) as wt:
+        if merge_main:
+            r = _git(wt, "merge", "--quiet", "--no-commit", "--no-ff", main, dry=dry, env=MERGE_IDENTITY)
+            if r.returncode != 0:
+                conflicts = _git(wt, "diff", "--name-only", "--diff-filter=U", dry=dry).stdout.split()
+                _git(wt, "merge", "--abort", dry=dry)
+                raise SystemExit(f"{ref} does not merge with {remote}'s main: "
+                                 f"{', '.join(conflicts) or r.stdout.strip() or r.stderr.strip()}")
+        carried = carry_uncommitted(tree, wt, dry=dry) if uncommitted else []
+        if not dry:
+            what = f"pull request {pr} at " if pr is not None else ""
+            with_main = f" merged with {remote}'s main {short(tree, main)}" if merge_main else ""
+            extra = (f", with the tree's uncommitted work ({len(carried)} untracked file(s))"
+                     if uncommitted else "")
+            print(f"testing {what}{short(wt, 'HEAD')}{with_main}{extra}", flush=True)
+        yield wt
+
+
+@contextlib.contextmanager
+def main_tree(a: argparse.Namespace, *, dry: bool) -> Iterator[tuple[Path, str]]:
+    """(the main checkout `compare` reruns the branch's failures on, a warning or
+    ""). With --main, that checkout; without it, `remote`'s main, fetched (once:
+    with --merge-main it is the main the branch was merged with), in a worktree.
+    A --main other than the main the branch was merged with is warned of: a
+    failure that main's newer commits cause would read as the branch's."""
+    if a.main is not None:
+        warn = ""
+        if a.merge_main and not dry:
+            have, merged = short(a.main, "HEAD"), short(a.tree.resolve(), f"{PRIVATE_REFS}/main")
+            if have != merged:
+                warn = (f"WARNING: --main is at {have}, the branch was merged with main {merged}: a failure only "
+                        "main's other commits cause reads as BRANCH ONLY; leave --main out to rerun on "
+                        f"{merged}")
+        yield a.main, warn
+        return
+    tree = a.tree.resolve()
+    _need_checkout(tree, "compare without --main fetches main, so needs a git checkout", dry=dry)
+    ref = f"{PRIVATE_REFS}/main" if a.merge_main else fetch_main(tree, a.remote, dry=dry)
+    with worktree_at(tree, ref, dry=dry) as wt:
+        if not dry:
+            print(f"main: {a.remote}'s main at {short(wt, 'HEAD')}", flush=True)
+        yield wt, ""
+
+
+def bng2_root(model: Path, root: Path | None) -> Path:
+    """What `bng2` mounts: `root`, or the git checkout the model is in, or its
+    directory. BNG2.pl reads a relative path (readFile, a .net) from the
+    directory it runs in, the model's, so a model that reads ../x needs x mounted."""
+    if root is not None:
+        root = root.resolve()
+        if not model.is_relative_to(root):
+            raise SystemExit(f"--root {root} does not hold the model {model}")
+        return root
+    try:
+        r = subprocess.run(["git", "-C", str(model.parent), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True)
+    except OSError:
+        return model.parent
+    top = Path(r.stdout.strip()).resolve() if r.returncode == 0 and r.stdout.strip() else None
+    return top if top is not None and model.is_relative_to(top) else model.parent
+
+
+def bng2_command(model: Path, root: Path, out: Path, image: str, args: list[str]) -> list[str]:
+    """BNG2.pl on `model`, run from its own directory: `root` (which holds it)
+    mounted read-only at /model, its output and its log written to `out`, handed
+    back to the caller's user."""
+    rel = model.relative_to(root)
+    here = shlex.quote(str(Path("/model") / rel.parent))
     log = shlex.quote(f"/out/{model.stem}.bng2.log")
-    script = (f'cd /out && perl "$BNGPATH/BNG2.pl" --outdir /out {" ".join(shlex.quote(x) for x in args)} '
-              f"{shlex.quote('/model/' + model.name)} 2>&1 | tee {log}; rc=${{PIPESTATUS[0]}}; "
+    script = (f'cd {here} && perl "$BNGPATH/BNG2.pl" --outdir /out {" ".join(shlex.quote(x) for x in args)} '
+              f"{shlex.quote(model.name)} 2>&1 | tee {log}; rc=${{PIPESTATUS[0]}}; "
               'if [ -n "${HOST_UID:-}" ]; then chown -R "$HOST_UID:${HOST_GID:-$HOST_UID}" /out; fi; '
               "exit $rc")
     script = re.sub(" +", " ", script)
     return ["docker", "run", "--rm", "--platform", "linux/amd64", *owner_env(),
-            "-v", f"{model.parent}:/model:ro", "-v", f"{out}:/out", image, "bash", "-c", script]
+            "-v", f"{root}:/model:ro", "-v", f"{out}:/out", image, "bash", "-c", script]
 
 
 def cmd_bng2(a: argparse.Namespace) -> int:
     model = a.model.resolve()
     if not a.dry_run and not model.is_file():
         raise SystemExit(f"no model at {model}")
+    root = bng2_root(model, a.root)
     out = (a.out or Path("bng2-out") / model.stem).resolve()
     image = a.image or image_name("amd64", "bionetgen")
     if not probe(image, "amd64", dry=a.dry_run):
         raise SystemExit(f"no container of {image} starts: build it (build --kind bionetgen), or run doctor")
     if not a.dry_run:
         out.mkdir(parents=True, exist_ok=True)
-    r = sh(bng2_command(model, out, image, shlex.split(a.args)), dry=a.dry_run, capture=False,
+    print(f"mounting {root} read-only; BNG2.pl runs in the model's directory", flush=True)
+    r = sh(bng2_command(model, root, out, image, shlex.split(a.args)), dry=a.dry_run, capture=False,
            timeout=a.timeout)
     if not a.dry_run:
         files = sorted(p.name for p in out.iterdir() if p.is_file())
@@ -481,7 +619,10 @@ def run_tree(tree: Path, out: Path, tests: list[str], w: Where) -> Run:
     if w.dry:
         return Run("dry run")
     log = out / "pytest.log"
-    return parse(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else r.stdout)
+    run = parse(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else r.stdout)
+    by_key = junit_messages(out / "junit.xml")
+    run.messages = {t: by_key[junit_key(t)] for t in run.failed if junit_key(t) in by_key}
+    return run
 
 
 def _where(a: argparse.Namespace) -> Where:
@@ -518,7 +659,8 @@ def _start(w: Where, kind: str) -> list[str]:
 def cmd_test(a: argparse.Namespace) -> int:
     w = _where(a)
     warnings = _start(w, a.kind)
-    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, remote=a.remote, dry=w.dry) as tree:
+    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
+                       remote=a.remote, dry=w.dry) as tree:
         run = run_tree(tree, a.out, a.tests, w)
     if w.dry:
         return 0
@@ -526,10 +668,15 @@ def cmd_test(a: argparse.Namespace) -> int:
     emulated = native is not None and native != w.arch
     known = read_known(a.known, a.kind, emulated)
     standing, new = sort_failures(run.failed, known)
+    no_antimony, new = needs_antimony(new, run.messages) if w.arch == "arm64" else ([], new)
     lines = [f"image {w.image}" + (f" (emulated: {w.arch} on an {native} Docker)" if emulated else ""),
              *warnings, *filter(None, [cache_line(a.out)]),
              f"summary: {run.summary or 'no pytest summary (see build.log)'}"]
     lines += [f"  standing (fails on main here too): {t}" for t in standing]
+    if no_antimony:
+        lines.append(f"  {len(no_antimony)} failure(s) only because the arm64 image has no antimony (no Linux "
+                     "aarch64 wheel); the amd64 images run them")
+        lines += [f"  needs antimony: {t}" for t in no_antimony]
     lines += [f"  NEW: {t}" for t in new]
     stale = stale_known(run, known)
     lines += [f"  STALE: {t} is listed in {a.known.name} for this image and passed: delete its line, "
@@ -547,10 +694,12 @@ def cmd_test(a: argparse.Namespace) -> int:
 def cmd_compare(a: argparse.Namespace) -> int:
     w = _where(a)
     warnings = _start(w, a.kind)
-    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, remote=a.remote, dry=w.dry) as tree:
+    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
+                       remote=a.remote, dry=w.dry) as tree:
         branch = run_tree(tree, a.out / "branch", a.tests, w)
     if w.dry:
-        run_tree(a.main, a.out / "main", ["<the branch's failures>"], w)
+        with main_tree(a, dry=True) as (m, _):
+            run_tree(m, a.out / "main", ["<the branch's failures>"], w)
         return 0
     lines = [f"image {w.image}", *warnings, *filter(None, [cache_line(a.out / "branch")]),
              f"branch: {branch.summary or 'no pytest summary (see branch/build.log)'}"]
@@ -560,7 +709,11 @@ def cmd_compare(a: argparse.Namespace) -> int:
     if not branch.failed:
         _report(a.out, [*lines, "nothing fails on the branch"])
         return 0
-    main = run_tree(a.main, a.out / "main", branch.failed, w)
+    with main_tree(a, dry=False) as (m, warn):
+        if warn:
+            print(warn, file=sys.stderr, flush=True)
+            lines.insert(1, warn)
+        main = run_tree(m, a.out / "main", branch.failed, w)
     lines.append(f"main, the branch's {len(branch.failed)} failure(s) run again: "
                  f"{main.summary or 'no pytest summary (see main/build.log)'}")
     if not main.summary:
@@ -648,11 +801,14 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--pr", type=int, help="test this pull request's head, fetched from --remote")
         p.add_argument("--merge-main", action="store_true",
                        help="test the commit merged with --remote's main (two branches can fail only together)")
+        p.add_argument("--uncommitted", action="store_true",
+                       help="with --merge-main: carry the tree's uncommitted edits and untracked files in")
         p.add_argument("--remote", default="origin", help="where --pr and --merge-main fetch from (default origin)")
         if name == "shell":
             continue
         if name == "compare":
-            p.add_argument("--main", type=Path, required=True, help="a checkout of bngsim's main")
+            p.add_argument("--main", type=Path,
+                           help="a checkout of bngsim's main (default: --remote's main, fetched now)")
         p.add_argument("--tests", nargs="*", default=[], help="test files or ids (default: python/tests)")
         p.add_argument("--workers", type=int, default=3, help="pytest-xdist workers")
         p.add_argument("--build-jobs", type=int, default=2,
@@ -667,6 +823,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("bng2", help="run BNG2.pl (BioNetGen 2.9.3) on a model, in the BioNetGen image")
     p.add_argument("model", type=Path, help="a .bngl file")
     p.add_argument("--out", type=Path, help="where its files go (default bng2-out/<model>)")
+    p.add_argument("--root", type=Path,
+                   help="the directory to mount, holding the model and what it reads "
+                        "(default: its git checkout, else its directory)")
     p.add_argument("--args", default="", help="more arguments for BNG2.pl, as one string")
     p.add_argument("--image", help="default: bngsim-linux-bionetgen:latest")
     p.add_argument("--timeout", type=float, default=1800, help="seconds")
@@ -703,7 +862,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_bng2(a)
     # shell
     image = a.image or image_name(a.arch, a.kind)
-    with (prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, remote=a.remote, dry=a.dry_run) as tree,
+    with (prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
+                        remote=a.remote, dry=a.dry_run) as tree,
           tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch):
         copy = Path(scratch) / "src"
         copy_tree(tree.resolve(), copy, dry=a.dry_run)

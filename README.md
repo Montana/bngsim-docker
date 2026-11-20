@@ -71,7 +71,9 @@ python bngsim_docker.py test --tree ~/work/bngsim    # the whole of python/tests
 python bngsim_docker.py test --tree ~/work/bngsim --tests python/tests/test_x.py
 python bngsim_docker.py test --tree ~/work/bngsim --kind ubuntu
 python bngsim_docker.py compare --tree ~/work/branch --main ~/work/main
+python bngsim_docker.py compare --tree ~/work/branch --merge-main   # main: the one it was merged with
 python bngsim_docker.py test --tree ~/work/bngsim --merge-main   # its commit merged with main
+python bngsim_docker.py test --tree ~/work/bngsim --merge-main --uncommitted   # and its edits not yet committed
 python bngsim_docker.py test --tree ~/work/bngsim --pr 1774      # a pull request's head
 python bngsim_docker.py shell --tree ~/work/bngsim   # a shell, the tree copied to /src
 
@@ -92,7 +94,7 @@ python bngsim_docker.py clean --images               # and the images
 | `test` | copies the tree in, builds it, runs pytest, sorts failures against [`known-failures.txt`](known-failures.txt) | 1 if a failure is not listed, or the run did not finish |
 | `compare` | runs the tree's tests, then runs each failure again on a main checkout in the same image | 1 if a failure is the branch's only, or a run did not finish |
 | `shell` | an interactive shell, the tree copied to `/src` | the shell's |
-| `bng2` | runs BNG2.pl 2.9.3 on a `.bngl` in the BioNetGen image: the model's directory mounted read-only, the files BNG2.pl writes and its log (`<model>.bng2.log`) in `--out` (default `bng2-out/<model>`); `--args` passes more arguments | BNG2.pl's |
+| `bng2` | runs BNG2.pl 2.9.3 on a `.bngl` in the BioNetGen image, from the model's own directory (BNG2.pl reads a relative path, such as `readFile`'s, from where it runs): the model's git checkout (or its directory, or `--root`) mounted read-only, the files BNG2.pl writes and its log (`<model>.bng2.log`) in `--out` (default `bng2-out/<model>`); `--args` passes more arguments | BNG2.pl's |
 | `clean` | lists the cache volumes and images this tool makes, with their sizes, and removes the caches (`--images`: the images too). Volumes and images of other names are left alone | 1 if Docker refuses one, such as a volume a running container uses |
 
 Flags shared by every command but `clean` (which takes only `--images` and `--dry-run`):
@@ -108,7 +110,7 @@ And by `test` and `compare`:
 | Flag | Default | Meaning |
 |---|---|---|
 | `--tree` | `.` | the bngsim tree to test |
-| `--main` | (required for `compare`) | a checkout of bngsim's main |
+| `--main` | `--remote`'s main, fetched | (`compare`) a checkout of bngsim's main. Left out, `compare` reruns on main as fetched now; with `--merge-main`, on the very main the branch was merged with, so a failure that main's newer commits cause is not read as the branch's. A `--main` at another commit than the one merged with is warned of |
 | `--tests` | `python/tests` | test files or ids |
 | `--workers` | 3 | pytest-xdist workers |
 | `--build-jobs` | 2 | compiles at once (see [Troubleshooting](#troubleshooting)) |
@@ -121,9 +123,10 @@ And by `test` and `compare`:
 | `--fail-on-stale` | off | (`test` only) exit 1 when a standing failure passed, so the list is kept true |
 | `--pr` | off | test this pull request's head (`refs/pull/N/head`), fetched from `--remote`; also `shell` |
 | `--merge-main` | off | test the commit (the tree's, or the pull request's) merged with `--remote`'s main; also `shell` |
+| `--uncommitted` | off | with `--merge-main`: carry the tree's uncommitted edits, deletions and untracked files (not ignored ones) onto the merge; changes that do not apply to it stop the run |
 | `--remote` | `origin` | where `--pr` and `--merge-main` fetch from |
 
-With `--pr` or `--merge-main` the run tests a commit, not the tree as it stands: the commit is checked out in a worktree of the tree's repository, in a scratch directory, and removed afterwards. Every file the commit tracks is there (a checkout that has deleted or not yet made a file, such as `uv.lock`, still tests with it), and uncommitted changes are not (a warning says when the tree has some). The fetches go to `refs/bngsim-docker/`, so the tree's own branches and `origin/*` do not move. A merge that conflicts stops the run and names the files.
+With `--pr` or `--merge-main` the run tests a commit, not the tree as it stands: the commit is checked out in a worktree of the tree's repository, in a scratch directory, and removed afterwards. Every file the commit tracks is there (a checkout that has deleted or not yet made a file, such as `uv.lock`, still tests with it, unless `--uncommitted` carries the deletion in), and uncommitted changes are not unless `--uncommitted` carries them in (a warning says when the tree has some). The fetches go to `refs/bngsim-docker/`, so the tree's own branches and `origin/*` do not move. A merge that conflicts stops the run and names the files.
 
 **Before you say a branch passes, test it merged with main** (`--merge-main`): two branches that each pass alone can fail together, as when each adds a case to a count a test pins. CI tests a pull request merged with main; this is the same run, locally.
 
@@ -196,6 +199,8 @@ Measured on an Apple Silicon Mac, `bngsim-linux-amd64` under emulation, bngsim m
 The CLI and Compose use the same names, so they fill the same cache. The images' compilers differ, so each has its own. `--no-ccache` builds without it. `docker volume rm bngsim-ccache-debian-amd64` empties one, `clean` empties them all, and the cache caps itself at 3 GB.
 
 ## Failures that are the container's
+
+**On arm64**, bngsim is installed without antimony (it ships no Linux aarch64 wheel), so every test that loads an Antimony model fails there. `test` reads each failure's message from pytest's JUnit XML and, on an arm64 image only, reports a failure whose error is antimony missing as `needs antimony`, not as the tree's; a test that fails for any other reason still counts. For a verdict on those tests, use an amd64 image.
 
 A handful of tests fail in these containers on bngsim's main too. [`known-failures.txt`](known-failures.txt) lists them, each with its reason, so a red `test` run says at once whether it is the tree:
 
