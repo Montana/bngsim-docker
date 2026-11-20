@@ -9,6 +9,7 @@ Skipped when BNGSIM_RUN_IMAGE is not set (CI sets it after building).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -74,3 +75,66 @@ def test_the_examples_run_and_agree_with_their_exact_answers():
     assert exact == simulated == "425.8", r.stdout
     for t, a, want in re.findall(r"t = (\d)\s+A =\s+([\d.]+)\s+exact\s+([\d.]+)", r.stdout):
         assert a == want, (t, a, want)
+
+
+# ── the jupyter image (BNGSIM_JUPYTER_IMAGE) ────────────────────────────────
+
+JUPYTER = os.environ.get("BNGSIM_JUPYTER_IMAGE", "")
+needs_jupyter = pytest.mark.skipif(not JUPYTER, reason="set BNGSIM_JUPYTER_IMAGE to a built jupyter image")
+
+
+@needs_jupyter
+def test_the_tour_notebook_runs_and_agrees_with_its_exact_answers():
+    """Every cell runs, as a user other than root; both plots are drawn; the numbers are exact. (A kernel
+    can take over a minute to start where the image is emulated, hence the startup timeout.)"""
+    script = ("jupyter nbconvert --to notebook --execute --ExecutePreprocessor.startup_timeout=300 "
+              "/examples/tour.ipynb --output /tmp/t.ipynb >/dev/null && "
+              "python -c \"import json; nb = json.load(open('/tmp/t.ipynb')); "
+              "outs = [o for c in nb['cells'] if c['cell_type'] == 'code' for o in c['outputs']]; "
+              "print('errors', sum(o['output_type'] == 'error' for o in outs)); "
+              "print('plots', sum('image/png' in o.get('data', {}) for o in outs)); "
+              "print(''.join(t for o in outs for t in o.get('text', [])))\"")
+    r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", "--user", "1234:1234", JUPYTER,
+                        "bash", "-c", script], capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "errors 0" in r.stdout and "plots 2" in r.stdout, r.stdout
+    assert "exact 425.83, simulated 425.83" in r.stdout, r.stdout
+    for a, want in re.findall(r"A =\s+([\d.]+)\s+exact\s+([\d.]+)", r.stdout):
+        assert a == want
+
+
+@needs_jupyter
+def test_jupyterlab_asks_for_its_token_and_opens_in_work(tmp_path):
+    import time
+    import urllib.error
+    import urllib.request
+
+    (tmp_path / "mine.txt").write_text("x")
+    cid = subprocess.run(["docker", "run", "-d", "--rm", "--platform", f"linux/{ARCH}", "--user", "1234:1234",
+                          "-p", "127.0.0.1::8888", "-v", f"{tmp_path}:/work", JUPYTER],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        port = subprocess.run(["docker", "port", cid, "8888"], capture_output=True, text=True,
+                              check=True).stdout.split(":")[-1].strip()
+        token = ""
+        for _ in range(60):
+            m = re.search(r"token=([0-9a-f]+)", subprocess.run(["docker", "logs", cid], capture_output=True,
+                                                               text=True).stderr)
+            if m:
+                token = m.group(1)
+                break
+            time.sleep(1)
+        assert token, "JupyterLab printed no token"
+        base = f"http://127.0.0.1:{port}"
+        with pytest.raises(urllib.error.HTTPError) as no_token:
+            urllib.request.urlopen(f"{base}/api/contents/", timeout=10)
+        assert no_token.value.code == 403
+        work = json.load(urllib.request.urlopen(f"{base}/api/contents/work?token={token}", timeout=10))
+        assert [c["name"] for c in work["content"]] == ["mine.txt"]
+        tour = json.load(urllib.request.urlopen(f"{base}/api/contents/examples/tour.ipynb?token={token}&content=0",
+                                                timeout=10))
+        assert tour["type"] == "notebook" and tour["writable"]
+        lab = urllib.request.urlopen(f"{base}/lab?token={token}", timeout=10).read().decode()
+        assert re.search(r'"preferredPath":\s*"work"', lab)
+    finally:
+        subprocess.run(["docker", "stop", cid], capture_output=True)

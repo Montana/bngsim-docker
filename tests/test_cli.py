@@ -376,7 +376,8 @@ def test_every_name_clean_may_remove_is_one_the_tool_makes():
     assert volumes == {"bngsim-ccache-debian-amd64", "bngsim-ccache-debian-arm64", "bngsim-ccache-ubuntu-amd64",
                        "bngsim-ccache-ubuntu-arm64", "bngsim-ccache-bionetgen-amd64"}
     assert repos == {"bngsim-linux-amd64", "bngsim-linux-arm64", "bngsim-linux-ubuntu",
-                     "bngsim-linux-ubuntu-arm64", "bngsim-linux-bionetgen", "bngsim-run", "bngsim-run-arm64"}
+                     "bngsim-linux-ubuntu-arm64", "bngsim-linux-bionetgen", "bngsim-run", "bngsim-run-arm64",
+                     "bngsim-jupyter", "bngsim-jupyter-arm64"}
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert all(v in volumes for v in re.findall(r"name: (bngsim-ccache-\S+)", compose))
 
@@ -567,3 +568,18 @@ def test_the_bngsim_image_installs_the_release_asked_for():
     assert "--build-arg" not in default
     with pytest.raises(SystemExit, match="for --kind bngsim"):
         bd.build_commands("amd64", "debian", bngsim_version="0.18.0")
+
+
+@pytest.mark.parametrize("kind,stage,image", [("bngsim", "bngsim", "bngsim-run-arm64:latest"),
+                                              ("bngsim-jupyter", "jupyter", "bngsim-jupyter-arm64:latest")])
+def test_each_running_image_builds_its_own_stage(kind, stage, image):
+    """One Dockerfile, two images: without --target Docker builds the last stage (Jupyter)."""
+    (cmd,) = bd.build_commands("arm64", kind, bngsim_version="0.17.2")
+    assert cmd[cmd.index("--target") + 1] == stage
+    assert cmd[cmd.index("-t") + 1] == image
+    assert "BNGSIM_VERSION=0.17.2" in cmd
+
+
+def test_the_jupyter_image_is_not_one_to_test_a_tree_in(tmp_path):
+    with pytest.raises(SystemExit, match="does not build a tree"):
+        bd.main(["test", "--tree", str(tmp_path), "--kind", "bngsim-jupyter", "--dry-run"])

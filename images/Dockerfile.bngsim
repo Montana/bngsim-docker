@@ -44,7 +44,7 @@ open('/bng.tgz', 'wb').write(data)"
 RUN mkdir -p /opt && tar -xzf /bng.tgz -C /opt && rm /bng.tgz
 
 # ── the image ────────────────────────────────────────────────────────────────
-FROM python:${PYTHON_VERSION}-slim-bookworm
+FROM python:${PYTHON_VERSION}-slim-bookworm AS bngsim
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG BNGSIM_VERSION=0.17.2
 ARG BNG_VERSION=2.9.3
@@ -87,7 +87,8 @@ LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker"
 ENV HOME=/home/bngsim
 RUN mkdir -p /home/bngsim/.cache /work && chmod 1777 /home/bngsim /home/bngsim/.cache /work
 
-# Examples to try first: python /examples/run.py
+# Examples to try first: python /examples/run.py (and, in the jupyter image,
+# /examples/tour.ipynb)
 COPY examples /examples
 
 # A copy of this file, which the CLI compares with the repository's to say when
@@ -96,3 +97,21 @@ COPY examples /examples
 COPY Dockerfile.bngsim /etc/bngsim-docker/Dockerfile.bngsim
 WORKDIR /work
 CMD ["python"]
+
+# ── jupyter: the same, with JupyterLab and matplotlib, for notebooks ─────────
+#   docker run --rm -p 8888:8888 -v "$PWD":/work montanamendy/bngsim:jupyter
+# then open the http://127.0.0.1:8888/lab?token=... address it prints. The
+# token stays on: anyone who can reach the port could otherwise run code.
+FROM bngsim AS jupyter
+ARG JUPYTERLAB_VERSION=4.6.6
+ARG MATPLOTLIB_VERSION=3.11.2
+RUN pip install --no-cache-dir "jupyterlab==${JUPYTERLAB_VERSION}" "matplotlib==${MATPLOTLIB_VERSION}"
+EXPOSE 8888
+# --allow-root: the image runs as root unless given --user; --ip: reachable
+# through the published port, not only from inside the container.
+# The file browser starts in /work (the mounted folder) with / as its root, so
+# /examples, and its tour.ipynb, are one level up; the examples are writable by
+# any user, so a notebook opened there can be saved.
+RUN chmod -R a+w /examples
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", \
+     "--ServerApp.root_dir=/", "--FileContentsManager.preferred_dir=/work"]

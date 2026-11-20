@@ -184,3 +184,12 @@ def test_any_user_can_run_the_bngsim_image():
     assert "COPY examples /examples" in RUN_IMAGE
     for name in ("run.py", "receptor.bngl", "decay.xml"):
         assert (ROOT / "images" / "examples" / name).is_file()
+
+
+def test_the_jupyter_image_pins_its_versions_and_keeps_the_token():
+    jupyter = RUN_IMAGE.split("FROM bngsim AS jupyter", 1)[1]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _arg(jupyter, "JUPYTERLAB_VERSION"))
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _arg(jupyter, "MATPLOTLIB_VERSION"))
+    # Anyone who reached the port could run code without it.
+    assert "token=''" not in jupyter and "IdentityProvider.token" not in jupyter and "--NotebookApp.token" not in jupyter
+    assert (ROOT / "images" / "examples" / "tour.ipynb").is_file()

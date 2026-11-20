@@ -61,9 +61,11 @@ jobs:
           BNGSIM_DOCKER_ARCH: amd64
         run: python -m pytest -q -rs tests/test_container.py
       - run: python bngsim_docker.py build --kind bngsim
-      - name: check the bngsim image against the exact solution (BNGL, SSA, SBML, Antimony)
+      - run: python bngsim_docker.py build --kind bngsim-jupyter
+      - name: check the bngsim and jupyter images against exact answers (BNGL, SSA, SBML, Antimony, the notebook)
         env:
           BNGSIM_RUN_IMAGE: bngsim-run:latest
+          BNGSIM_JUPYTER_IMAGE: bngsim-jupyter:latest
           BNGSIM_DOCKER_ARCH: amd64
         run: python -m pytest -q -rs tests/test_bngsim_image.py
       - name: save the base image for the smoke run
@@ -147,7 +149,9 @@ jobs:
         run: python -m pytest -q -rs tests/test_container.py
       - name: build the bngsim image (bngsim from its sdist, as PyPI has no aarch64 wheel)
         run: python bngsim_docker.py build --kind bngsim --arch arm64
+      - run: python bngsim_docker.py build --kind bngsim-jupyter --arch arm64
       - env:
           BNGSIM_RUN_IMAGE: bngsim-run-arm64:latest
+          BNGSIM_JUPYTER_IMAGE: bngsim-jupyter-arm64:latest
           BNGSIM_DOCKER_ARCH: arm64
         run: python -m pytest -q -rs tests/test_bngsim_image.py

@@ -93,17 +93,19 @@ ROOT = Path(__file__).resolve().parent
 IMAGES = ROOT / "images"
 KNOWN = ROOT / "known-failures.txt"
 EXCLUDE = (".venv", "build", ".git", "*.log", "__pycache__", ".pytest_cache", ".mutate-backup", "*.so")
-KINDS = ("debian", "ubuntu", "bionetgen", "bngsim")
+KINDS = ("debian", "ubuntu", "bionetgen", "bngsim", "bngsim-jupyter")
 TESTING = ("debian", "ubuntu", "bionetgen")  # the images a tree is tested in; bngsim's runs bngsim
 ARCHES = ("amd64", "arm64")
 DOCKERFILE = {"debian": "Dockerfile", "ubuntu": "Dockerfile.ubuntu", "bionetgen": "Dockerfile.bionetgen",
-              "bngsim": "Dockerfile.bngsim"}
+              "bngsim": "Dockerfile.bngsim", "bngsim-jupyter": "Dockerfile.bngsim"}
+RUNNING = {"bngsim": "bngsim", "bngsim-jupyter": "jupyter"}  # the images that run bngsim: their Dockerfile stage
 STAMPS = "/etc/bngsim-docker"  # where each image keeps a copy of the Dockerfiles it was built from
 
 
 def image_name(arch: str, kind: str = "debian") -> str:
-    if kind == "bngsim":
-        return "bngsim-run:latest" if arch == "amd64" else f"bngsim-run-{arch}:latest"
+    if kind in RUNNING:
+        name = "bngsim-run" if kind == "bngsim" else "bngsim-jupyter"
+        return f"{name}:latest" if arch == "amd64" else f"{name}-{arch}:latest"
     if kind == "bionetgen":
         return "bngsim-linux-bionetgen:latest"
     if kind == "ubuntu":
@@ -123,8 +125,9 @@ def build_commands(arch: str, kind: str, fresh: bool = False,
     security updates); BioNetGen's base is the local Debian image, built just
     before, so it is not pulled. `bngsim_version` picks the release the bngsim
     image installs (default: the Dockerfile's)."""
-    if bngsim_version and kind != "bngsim":
-        raise SystemExit("--bngsim-version is for --kind bngsim: the other images build a tree, not a release")
+    if bngsim_version and kind not in RUNNING:
+        raise SystemExit("--bngsim-version is for --kind bngsim or bngsim-jupyter: the other images build a tree, "
+                         "not a release")
     if kind == "bionetgen" and arch != "amd64":
         raise SystemExit("BioNetGen's Linux release is x86-64 only: --kind bionetgen needs --arch amd64")
 
@@ -135,8 +138,9 @@ def build_commands(arch: str, kind: str, fresh: bool = False,
 
     if kind == "bionetgen":
         return [build("debian"), build("bionetgen", "--build-arg", f"BASE={image_name(arch)}")]
-    if kind == "bngsim" and bngsim_version:
-        return [build(kind, "--build-arg", f"BNGSIM_VERSION={bngsim_version}")]
+    if kind in RUNNING:
+        version = ["--build-arg", f"BNGSIM_VERSION={bngsim_version}"] if bngsim_version else []
+        return [build(kind, "--target", RUNNING[kind], *version)]
     return [build(kind)]
 
 
@@ -867,13 +871,15 @@ def main(argv: list[str] | None = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--arch", choices=ARCHES, default="amd64")
     common.add_argument("--kind", choices=KINDS, default="debian",
-                        help="debian (default), ubuntu (as bngsim's CI), bionetgen, or bngsim (bngsim installed, to run it)")
+                        help="debian (default), ubuntu (as bngsim's CI), bionetgen; or bngsim (bngsim installed, "
+                             "to run it) and bngsim-jupyter (the same, with JupyterLab)")
     common.add_argument("--dry-run", action="store_true", help="print the commands; run nothing")
 
     p = sub.add_parser("build", parents=[common], help="build an image")
     p.add_argument("--fresh", action="store_true",
                    help="pull the base image again and build every layer anew (picks up security updates)")
-    p.add_argument("--bngsim-version", help="with --kind bngsim: the bngsim release to install (default: the Dockerfile's)")
+    p.add_argument("--bngsim-version",
+                   help="with --kind bngsim or bngsim-jupyter: the bngsim release to install (default: the Dockerfile's)")
     for name, helptext in (("probe", "does a container start?"),
                            ("doctor", "probe; restart Docker Desktop if no container starts")):
         p = sub.add_parser(name, parents=[common], help=helptext)
