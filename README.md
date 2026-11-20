@@ -10,25 +10,10 @@ The images hold only the toolchain. Each run copies a bngsim tree in, without it
 
 ## How a run goes
 
-```mermaid
-flowchart TD
-    D["Debian · everyday Linux checks"]
-    U["Ubuntu · reproduce BNGsim CI"]
-    B["BioNetGen · BNG2.pl and NFsim parity tests"]
-    D --> I["Build the selected toolchain image"]
-    U --> I
-    B --> I
+This is how a run goes when using `bngsim-docker`: 
 
-    S["Local BNGsim tree, PR head, or merge with main"] --> C["Copy source to /src"]
-    I --> R["Build BNGsim in Linux with uv sync"]
-    C --> R
-    R --> P["Run pytest on the suite or selected tests"]
+<img width="2268" height="1360" alt="mermaid-diagram" src="https://github.com/user-attachments/assets/dda8248b-a5c7-4ffc-bc32-3c0f8fea1466" />
 
-    P -->|"test"| T["Check failures against known-failures.txt"]
-    P -->|"compare"| M["Rerun only the failing tests on main in the same image"]
-    T --> K["Report known and unexpected failures"]
-    M --> V["Report which failures also occur on main and which are branch-only"]
-```
 
 ## Contents
 
