@@ -76,6 +76,20 @@ RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
 LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker" \
       org.opencontainers.image.description="bngsim, the BioNetGen simulation engine from Los Alamos National Laboratory, ready to run: BNGL, SBML and Antimony models, ODE and stochastic simulation"
 
+# Any user can run the image (docker run --user "$(id -u):$(id -g)", so what a
+# script writes to a mounted folder is the caller's, not root's). bngsim keeps
+# its compiled models and generated networks under $HOME/.cache: a home every
+# user can write to (sticky, like /tmp), or a compiled model fails with
+# "Permission denied: '/.cache'" for any user but root. /work too, for a run
+# with no folder mounted there.
+# .cache itself is made here and writable too: a build of the amd64 image under
+# Rosetta (Docker Desktop on Apple Silicon) writes .cache/rosetta as root.
+ENV HOME=/home/bngsim
+RUN mkdir -p /home/bngsim/.cache /work && chmod 1777 /home/bngsim /home/bngsim/.cache /work
+
+# Examples to try first: python /examples/run.py
+COPY examples /examples
+
 # A copy of this file, which the CLI compares with the repository's to say when
 # the image is older than its Dockerfile. Last, so no other layer depends on
 # it.

@@ -14,6 +14,15 @@ The images hold only the toolchain. Each run copies a bngsim tree in, without it
 
 [bngsim](https://github.com/lanl/bngsim), the BioNetGen simulation engine from Los Alamos National Laboratory, installed and ready: the release from PyPI, with BioNetGen 2.9.3 (so `.bngl` models load through BNG2.pl, with Perl and `$BNGPATH` set up), pandas, xarray and h5py, and a C compiler for bngsim's compiled right-hand sides. It reads BNGL, SBML, Antimony and BioNetGen `.net` models, and runs ODE and stochastic simulations.
 
+Try it first: the image carries examples, a rule-based ligand-receptor model (BNGL) and an SBML model, run and compared with their exact answers:
+
+```bash
+docker run --rm montanamendy/bngsim python /examples/run.py
+docker run --rm -v "$PWD":/work montanamendy/bngsim cp -r /examples /work/   # copy them, to start your own
+```
+
+Then your own models:
+
 ```bash
 docker run --rm -v "$PWD":/work montanamendy/bngsim python simulate.py
 docker run --rm -it -v "$PWD":/work montanamendy/bngsim        # a Python prompt, your files in /work
@@ -29,6 +38,8 @@ result = bngsim.Simulator(model, method="ode").run(t_span=(0, 10), n_points=101)
 print(result.observables["Atot"])
 ```
 
+On Linux, add `--user "$(id -u):$(id -g)"` so the files a run writes into your folder are yours, not root's. The image runs as any user: bngsim's compiled models and generated networks are cached in a home folder every user can write to.
+
 | Tag | |
 |---|---|
 | `latest`, `0.17.2`, ... | a bngsim release, amd64 and arm64 |
@@ -36,7 +47,7 @@ print(result.observables["Atot"])
 
 On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Linux: the image builds bngsim from its source release, and Antimony models are not supported there. Everything else is the same.
 
-Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and (amd64) an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
+Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and (amd64) an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed; a user other than root compiles a model, and the examples agree with their exact answers ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
 
 ## How a run goes
 

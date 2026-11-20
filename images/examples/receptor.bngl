@@ -1,0 +1,26 @@
+# A ligand binding a receptor, written as a rule: L + R <-> L.R
+# At equilibrium kon*(L0 - C)*(R0 - C) = koff*C, which run.py solves exactly
+# and compares with the simulation.
+begin model
+begin parameters
+  L0   1000    # ligand molecules
+  R0   500     # receptor molecules
+  kon  0.001   # binding, per molecule pair per second
+  koff 0.1     # unbinding, per second
+end parameters
+begin molecule types
+  L(r)
+  R(l)
+end molecule types
+begin species
+  L(r) L0
+  R(l) R0
+end species
+begin observables
+  Molecules Bound L(r!1).R(l!1)
+  Molecules FreeL L(r)
+end observables
+begin reaction rules
+  L(r) + R(l) <-> L(r!1).R(l!1) kon, koff
+end reaction rules
+end model

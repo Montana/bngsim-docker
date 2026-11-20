@@ -10,6 +10,7 @@ Skipped when BNGSIM_RUN_IMAGE is not set (CI sets it after building).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -51,3 +52,25 @@ def test_bngsim_s_core_finds_every_library_it_links():
     r = run("bash", "-c", 'ldd "$(python -c "import bngsim._bngsim_core as c; print(c.__file__)")"')
     assert r.returncode == 0, r.stderr
     assert "not found" not in r.stdout, r.stdout
+
+
+def test_a_user_other_than_root_compiles_a_model():
+    """docker run --user: bngsim's caches live under $HOME, which must be
+    writable by any user, or codegen fails with "Permission denied: '/.cache'"."""
+    r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", "--user", "1234:1234", IMAGE,
+                        "python", "-c",
+                        "import bngsim; s = bngsim.Simulator(bngsim.Model.load('/examples/receptor.bngl'),"
+                        " method='ode', codegen=True); s.run(t_span=(0, 1), n_points=2); print(s.codegen_backend)"],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.strip().splitlines()[-1] in ("cc", "mir"), r.stdout
+
+
+def test_the_examples_run_and_agree_with_their_exact_answers():
+    r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", "--user", "1234:1234", IMAGE,
+                        "python", "/examples/run.py"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout + r.stderr
+    exact, simulated = re.search(r"equilibrium, exact: ([\d.]+)\s+simulated: ([\d.]+)", r.stdout).groups()
+    assert exact == simulated == "425.8", r.stdout
+    for t, a, want in re.findall(r"t = (\d)\s+A =\s+([\d.]+)\s+exact\s+([\d.]+)", r.stdout):
+        assert a == want, (t, a, want)

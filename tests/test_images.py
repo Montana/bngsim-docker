@@ -175,3 +175,12 @@ def test_the_bngsim_image_has_what_running_bngsim_needs(package):
     """perl for BNG2.pl, libexpat1 for libsbml (the slim base leaves it out), gcc for compiled RHS."""
     final = RUN_IMAGE.split("# ── the image", 1)[1]
     assert package in final
+
+
+def test_any_user_can_run_the_bngsim_image():
+    """A home every user can write to, for bngsim's caches; and the examples."""
+    assert "ENV HOME=/home/bngsim" in RUN_IMAGE
+    assert "chmod 1777 /home/bngsim /home/bngsim/.cache /work" in RUN_IMAGE
+    assert "COPY examples /examples" in RUN_IMAGE
+    for name in ("run.py", "receptor.bngl", "decay.xml"):
+        assert (ROOT / "images" / "examples" / name).is_file()
