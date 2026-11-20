@@ -141,11 +141,30 @@ class Run:
     messages: dict[str, str] = field(default_factory=dict)  # failed id -> its error, from junit.xml
 
 
+def test_id(rest: str) -> str:
+    """The test id at the start of a summary line's remainder. A parametrized id
+    can hold spaces (`test_x[S, V]`): it runs to the bracket that closes its
+    first `[`, not to the first space; an id without one ends at the first space
+    (a ` - message` may follow)."""
+    head = rest.split(" ", 1)[0]
+    if "[" not in head:
+        return head
+    depth = 0
+    for i, ch in enumerate(rest):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return rest[:i + 1]
+    return rest.split(" - ", 1)[0].rstrip()
+
+
 def parse(output: str) -> Run:
     """The summary line, and the failed (or errored) and passed test ids, of a pytest
     run made with `-rfEp`, which lists each by id."""
-    failed = [m.group(1) for m in re.finditer(r"^(?:FAILED|ERROR) (\S+)", output, re.M)]
-    passed = [m.group(1) for m in re.finditer(r"^PASSED (\S+)", output, re.M)]
+    failed = [test_id(m.group(1)) for m in re.finditer(r"^(?:FAILED|ERROR) (.+)$", output, re.M)]
+    passed = [test_id(m.group(1)) for m in re.finditer(r"^PASSED (.+)$", output, re.M)]
     rows = [ln.strip("= ") for ln in output.splitlines() if re.search(r"\d+ (passed|failed)", ln)]
     return Run(rows[-1] if rows else "", list(dict.fromkeys(failed)), list(dict.fromkeys(passed)))
 

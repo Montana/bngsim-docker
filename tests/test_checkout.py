@@ -439,3 +439,15 @@ def test_a_repository_that_cannot_be_cloned_is_named(tmp_path):
     with pytest.raises(SystemExit, match="cannot clone"):
         with bd.checkout_for_pr(a, dry=False):
             pass
+
+
+def test_an_id_with_spaces_in_its_parameters_is_read_whole():
+    out = ("FAILED python/tests/test_a.py::test_x[S, V]\n"
+           "FAILED python/tests/test_a.py::test_y[a[1], b] - AssertionError: [no]\n"
+           "ERROR python/tests/test_a.py::test_z - RuntimeError\n"
+           "PASSED python/tests/test_a.py::test_w[x y]\n"
+           "== 2 failed, 1 passed, 1 error in 1.0s ==\n")
+    run = bd.parse(out)
+    assert run.failed == ["python/tests/test_a.py::test_x[S, V]", "python/tests/test_a.py::test_y[a[1], b]",
+                          "python/tests/test_a.py::test_z"]
+    assert run.passed == ["python/tests/test_a.py::test_w[x y]"]
