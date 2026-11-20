@@ -95,6 +95,12 @@ jobs:
         run: |
           python bngsim_docker.py test --tree bngsim --out smoke \
             --tests python/tests/test_version_consistency.py python/tests/test_method_normalization.py
+      - name: one command, nothing else installed (bngsim-test fetches main from GitHub)
+        run: |
+          docker run --rm bngsim-linux-amd64:latest bngsim-test --ref main \
+            python/tests/test_version_consistency.py python/tests/test_method_normalization.py | tee bngsim-test.log
+          grep -q "bngsim-test: testing main at" bngsim-test.log
+          grep -Eq "[0-9]+ passed" bngsim-test.log && ! grep -Eq "[0-9]+ failed" bngsim-test.log
       - if: always()
         uses: actions/upload-artifact@v4
         with:

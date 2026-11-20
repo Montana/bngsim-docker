@@ -1,0 +1,92 @@
+#!/bin/bash
+# Build bngsim and run its tests, in a bngsim-linux image: one command, nothing
+# else to install.
+#
+#   bngsim-test [options] [pytest targets...]     (default target: python/tests)
+#
+# What is tested:
+#   a tree mounted at /tree           (docker run -v ~/bngsim:/tree:ro ...)
+#   --pr N                            pull request N's head, from GitHub
+#   --ref REF                         a branch, tag or commit, from GitHub
+#   nothing                           bngsim's main, from GitHub
+# and, with --pr or --ref:
+#   --merge-main                      merged with main first, as CI tests a pull request;
+#                                     a merge that conflicts stops the run and names the files
+#   --repo URL                        another repository (default https://github.com/lanl/bngsim)
+#
+# The build and the logs stay in the container (/src, /out); mount /out to keep
+# the logs, and a volume at /ccache so a second run recompiles only what changed:
+#   docker run --rm -v bngsim-ccache:/ccache montanamendy/bngsim-linux bngsim-test --pr 1774
+# The settings container-test.sh reads (WORKERS, BUILD_JOBS, ...) pass through.
+set -euo pipefail
+
+REPO=https://github.com/lanl/bngsim
+PR="" REF="" MERGE=""
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --pr) PR="${2:?--pr needs a number}"; shift 2 ;;
+        --ref) REF="${2:?--ref needs a branch, tag or commit}"; shift 2 ;;
+        --merge-main) MERGE=1; shift ;;
+        --repo) REPO="${2:?--repo needs a URL}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "bngsim-test: unknown option $1 (pytest options go after --)" >&2; exit 2 ;;
+        *) break ;;
+    esac
+done
+if [ -n "$PR" ] && [ -n "$REF" ]; then
+    echo "bngsim-test: --pr or --ref, not both" >&2; exit 2
+fi
+if [ -n "$PR" ] && ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+    echo "bngsim-test: --pr takes a pull request number, not $PR" >&2; exit 2
+fi
+if [ -n "$MERGE" ] && [ -z "$PR$REF" ]; then
+    echo "bngsim-test: --merge-main merges --pr or --ref with main (for a mounted tree, use the bngsim-docker CLI)" >&2
+    exit 2
+fi
+
+if [ -d /src/python/bngsim ] || [ -d /tree/python/bngsim ]; then
+    # A tree is here already: test it, or say why not, but never fetch another
+    # in its place.
+    if [ -n "$PR$REF" ]; then
+        echo "bngsim-test: a tree is mounted at /tree; --pr and --ref fetch another (leave out the mount)" >&2
+        exit 2
+    fi
+    exec container-test.sh "$@"
+fi
+
+# Fetch from GitHub into /src: a real checkout, with its submodules, as CI's.
+git config --global --add safe.directory '*'
+git config --global advice.detachedHead false
+what="main"
+[ -n "$PR" ] && what="pull request $PR"
+[ -n "$REF" ] && what="$REF"
+echo "bngsim-test: fetching $what from $REPO"
+mkdir -p /src
+git -C /src init -q
+git -C /src remote add origin "$REPO"
+fetch() { git -C /src fetch -q --filter=blob:none origin "$@"; }
+fetch +refs/heads/main:refs/remotes/origin/main
+if [ -n "$PR" ]; then
+    fetch "+refs/pull/$PR/head:refs/bngsim-test/head" \
+        || { echo "bngsim-test: no pull request $PR at $REPO" >&2; exit 2; }
+elif [ -n "$REF" ]; then
+    fetch "+$REF:refs/bngsim-test/head" 2>/dev/null || fetch "+refs/heads/$REF:refs/bngsim-test/head" 2>/dev/null \
+        || fetch "+refs/tags/$REF:refs/bngsim-test/head" \
+        || { echo "bngsim-test: no branch, tag or commit $REF at $REPO" >&2; exit 2; }
+else
+    git -C /src update-ref refs/bngsim-test/head refs/remotes/origin/main
+fi
+git -C /src checkout -q --detach refs/bngsim-test/head
+if [ -n "$MERGE" ]; then
+    # Never committed, so the name it merges under is recorded nowhere.
+    if ! git -C /src -c user.name=bngsim-test -c user.email=bngsim-test@localhost \
+            merge -q --no-commit --no-ff origin/main >/dev/null 2>&1; then
+        echo "bngsim-test: $what does not merge with main: $(git -C /src diff --name-only --diff-filter=U | tr '\n' ' ')" >&2
+        exit 2
+    fi
+fi
+git -C /src submodule update -q --init --recursive --depth 1
+echo "bngsim-test: testing $what at $(git -C /src rev-parse --short HEAD)$([ -n "$MERGE" ] && echo " merged with main $(git -C /src rev-parse --short origin/main)")"
+exec container-test.sh "$@"

@@ -190,6 +190,12 @@ def _digest(name):
     return hashlib.sha256((bd.IMAGES / name).read_bytes()).hexdigest()
 
 
+def _scripts():
+    """The stamp lines of the scripts the test images carry, as built from this repository."""
+    import hashlib
+    return "".join(f"{hashlib.sha256((bd.SCRIPTS / n).read_bytes()).hexdigest()}  {n}\n" for n in bd.IN_IMAGE_SCRIPTS)
+
+
 def _stale(monkeypatch, kind, stdout):
     seen = []
 
@@ -202,26 +208,26 @@ def _stale(monkeypatch, kind, stdout):
 
 
 def test_an_image_built_from_the_repository_s_dockerfile_is_current(monkeypatch):
-    warnings, seen = _stale(monkeypatch, "debian", f"{_digest('Dockerfile')}  Dockerfile\n")
+    warnings, seen = _stale(monkeypatch, "debian", f"{_digest('Dockerfile')}  Dockerfile\n" + _scripts())
     assert warnings == []
     assert seen[0][:6] == ["docker", "run", "--rm", "--platform", "linux/amd64", "img"]
 
 
 def test_an_image_built_from_an_older_dockerfile_is_named(monkeypatch):
-    warnings, _ = _stale(monkeypatch, "ubuntu", "0" * 64 + "  Dockerfile.ubuntu\n")
+    warnings, _ = _stale(monkeypatch, "ubuntu", "0" * 64 + "  Dockerfile.ubuntu\n" + _scripts())
     assert len(warnings) == 1 and "older images/Dockerfile.ubuntu" in warnings[0]
     assert "build --kind ubuntu --arch amd64" in warnings[0]
 
 
 def test_an_image_with_no_copy_is_named(monkeypatch):
-    warnings, _ = _stale(monkeypatch, "debian", "")
+    warnings, _ = _stale(monkeypatch, "debian", _scripts())
     assert len(warnings) == 1 and "carries no copy of images/Dockerfile" in warnings[0]
 
 
 def test_bionetgen_is_checked_against_its_base_too(monkeypatch):
-    current = f"{_digest('Dockerfile')}  Dockerfile\n{_digest('Dockerfile.bionetgen')}  Dockerfile.bionetgen\n"
+    current = f"{_digest('Dockerfile')}  Dockerfile\n{_digest('Dockerfile.bionetgen')}  Dockerfile.bionetgen\n" + _scripts()
     assert _stale(monkeypatch, "bionetgen", current)[0] == []
-    old_base = f"{'0' * 64}  Dockerfile\n{_digest('Dockerfile.bionetgen')}  Dockerfile.bionetgen\n"
+    old_base = f"{'0' * 64}  Dockerfile\n{_digest('Dockerfile.bionetgen')}  Dockerfile.bionetgen\n" + _scripts()
     warnings, _ = _stale(monkeypatch, "bionetgen", old_base)
     assert len(warnings) == 1 and "older images/Dockerfile;" in warnings[0]
 
@@ -583,3 +589,19 @@ def test_each_running_image_builds_its_own_stage(kind, stage, image):
 def test_the_jupyter_image_is_not_one_to_test_a_tree_in(tmp_path):
     with pytest.raises(SystemExit, match="does not build a tree"):
         bd.main(["test", "--tree", str(tmp_path), "--kind", "bngsim-jupyter", "--dry-run"])
+
+
+def test_an_image_built_before_a_script_changed_is_named(monkeypatch):
+    """The test images carry bngsim-test and container-test.sh: a change to either makes them stale."""
+    old = _scripts().replace(_scripts().split("  ")[0], "0" * 64, 1)
+    warnings, _ = _stale(monkeypatch, "debian", f"{_digest('Dockerfile')}  Dockerfile\n" + old)
+    assert len(warnings) == 1 and "older scripts/bngsim-test" in warnings[0]
+
+
+def test_the_test_images_are_given_the_scripts_and_the_bngsim_image_is_not():
+    (debian,) = bd.build_commands("amd64", "debian")
+    assert debian[debian.index("--build-context") + 1] == f"scripts={bd.SCRIPTS}"
+    base, bng = bd.build_commands("amd64", "bionetgen")
+    assert "--build-context" in base and "--build-context" not in bng  # BioNetGen's inherits them
+    (run,) = bd.build_commands("amd64", "bngsim")
+    assert "--build-context" not in run

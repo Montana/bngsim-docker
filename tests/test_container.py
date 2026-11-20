@@ -93,3 +93,43 @@ def test_the_image_carries_the_repository_s_dockerfiles():
         ["Dockerfile.ubuntu"] if UBUNTU else ["Dockerfile"])
     for name in names:
         assert run(f"cat /etc/bngsim-docker/{name}") == (ROOT / "images" / name).read_text(encoding="utf-8").strip()
+
+
+def test_the_image_carries_the_scripts_it_runs():
+    """bngsim-test and container-test.sh, on PATH, and the copies the staleness check reads."""
+    for name in ("bngsim-test", "container-test.sh"):
+        assert run(f"command -v {name}") == f"/usr/local/bin/{name}"
+        want = (ROOT / "scripts" / name).read_text(encoding="utf-8").strip()
+        assert run(f"cat /usr/local/bin/{name}") == want
+        assert run(f"cat /etc/bngsim-docker/{name}") == want
+
+
+def _bngsim_test(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", IMAGE, "bngsim-test", *args],
+                          capture_output=True, text=True, timeout=300)
+
+
+@pytest.mark.parametrize("args,said", [
+    (["--merge-main"], "--merge-main merges --pr or --ref"),
+    (["--pr", "12", "--ref", "main"], "--pr or --ref, not both"),
+    (["--pr", "abc"], "takes a pull request number"),
+    (["--bogus"], "unknown option --bogus"),
+])
+def test_bngsim_test_refuses_what_it_cannot_do(args, said):
+    r = _bngsim_test(*args)
+    assert r.returncode == 2 and said in r.stderr, r.stdout + r.stderr
+
+
+def test_bngsim_test_explains_itself():
+    r = _bngsim_test("--help")
+    assert r.returncode == 0 and "--pr N" in r.stdout and "--merge-main" in r.stdout
+
+
+def test_bngsim_test_never_fetches_over_a_mounted_tree(tmp_path):
+    """With a tree at /tree, --pr and --ref are refused at once, not fetched in its place."""
+    (tmp_path / "python" / "bngsim").mkdir(parents=True)
+    for args in (["--pr", "1"], ["--ref", "main"]):
+        r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", "-v", f"{tmp_path}:/tree:ro",
+                            IMAGE, "bngsim-test", *args], capture_output=True, text=True, timeout=60)
+        assert r.returncode == 2 and "a tree is mounted at /tree" in r.stderr, r.stdout + r.stderr
+        assert "fetching" not in r.stdout

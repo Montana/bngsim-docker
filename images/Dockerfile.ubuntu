@@ -54,6 +54,15 @@ LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker"
 # A copy of this file, which the CLI compares with the repository's to say when
 # the image is older than its Dockerfile. Last, so no other layer depends on
 # it.
+# bngsim-test: build bngsim and run its tests in one command (a pull request,
+# a branch, main, or a tree mounted at /tree), and container-test.sh, which it
+# runs. They come from the repository's scripts/ (a named build context:
+# --build-context scripts=scripts), and copies go beside the Dockerfile's for
+# the CLI's check that the image is current.
+# hadolint ignore=DL3022
+COPY --from=scripts --chmod=0755 bngsim-test container-test.sh /usr/local/bin/
+# hadolint ignore=DL3022
+COPY --from=scripts bngsim-test container-test.sh /etc/bngsim-docker/
 COPY Dockerfile.ubuntu /etc/bngsim-docker/Dockerfile.ubuntu
 WORKDIR /src
 CMD ["bash"]

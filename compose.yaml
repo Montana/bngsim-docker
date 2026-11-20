@@ -35,6 +35,8 @@ services:
     build:
       context: images
       dockerfile: Dockerfile
+      additional_contexts:
+        scripts: ./scripts
     profiles: ["build"]
 
   linux-arm64:
@@ -43,6 +45,8 @@ services:
     build:
       context: images
       dockerfile: Dockerfile
+      additional_contexts:
+        scripts: ./scripts
     profiles: ["build"]
 
   linux-ubuntu:
@@ -51,6 +55,8 @@ services:
     build:
       context: images
       dockerfile: Dockerfile.ubuntu
+      additional_contexts:
+        scripts: ./scripts
     profiles: ["build"]
 
   linux-bionetgen:

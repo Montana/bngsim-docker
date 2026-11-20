@@ -91,6 +91,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 IMAGES = ROOT / "images"
+SCRIPTS = ROOT / "scripts"
+IN_IMAGE_SCRIPTS = ("bngsim-test", "container-test.sh")  # copied into the test images
 KNOWN = ROOT / "known-failures.txt"
 EXCLUDE = (".venv", "build", ".git", "*.log", "__pycache__", ".pytest_cache", ".mutate-backup", "*.so")
 KINDS = ("debian", "ubuntu", "bionetgen", "bngsim", "bngsim-jupyter")
@@ -133,8 +135,10 @@ def build_commands(arch: str, kind: str, fresh: bool = False,
 
     def build(k: str, *extra: str) -> list[str]:
         new = (["--no-cache"] if k == "bionetgen" else ["--pull", "--no-cache"]) if fresh else []
+        # The test images carry the repository's scripts (bngsim-test, container-test.sh).
+        scripts = ["--build-context", f"scripts={SCRIPTS}"] if k in ("debian", "ubuntu") else []
         return ["docker", "build", "--platform", f"linux/{arch}", "-t", image_name(arch, k),
-                "-f", str(IMAGES / DOCKERFILE[k]), *new, *extra, str(IMAGES)]
+                "-f", str(IMAGES / DOCKERFILE[k]), *scripts, *new, *extra, str(IMAGES)]
 
     if kind == "bionetgen":
         return [build("debian"), build("bionetgen", "--build-arg", f"BASE={image_name(arch)}")]
@@ -350,8 +354,15 @@ def restart_docker_desktop(*, dry: bool) -> None:
 
 
 def stamp_names(kind: str) -> list[str]:
-    """The Dockerfiles an image is built from: BioNetGen's is built on the Debian one."""
-    return ["Dockerfile", "Dockerfile.bionetgen"] if kind == "bionetgen" else [DOCKERFILE[kind]]
+    """The files an image is built from, whose copies it keeps: its Dockerfile
+    (BioNetGen's is built on the Debian one), and the scripts the test images carry."""
+    if kind == "bionetgen":
+        return ["Dockerfile", "Dockerfile.bionetgen", *IN_IMAGE_SCRIPTS]
+    return [DOCKERFILE[kind], *IN_IMAGE_SCRIPTS] if kind in TESTING else [DOCKERFILE[kind]]
+
+
+def stamp_source(name: str) -> Path:
+    return SCRIPTS / name if name in IN_IMAGE_SCRIPTS else IMAGES / name
 
 
 def stale_image(image: str, arch: str, kind: str, *, dry: bool) -> list[str]:
@@ -370,11 +381,12 @@ def stale_image(image: str, arch: str, kind: str, *, dry: bool) -> list[str]:
     rebuild = f"rebuild it: python bngsim_docker.py build --kind {kind} --arch {arch}"
     out = []
     for name in names:
-        want = hashlib.sha256((IMAGES / name).read_bytes()).hexdigest()
+        want = hashlib.sha256(stamp_source(name).read_bytes()).hexdigest()
+        where = stamp_source(name).relative_to(ROOT)
         if name not in have:
-            out.append(f"{image} carries no copy of images/{name}, so it predates it or this check; {rebuild}")
+            out.append(f"{image} carries no copy of {where}, so it predates it or this check; {rebuild}")
         elif have[name] != want:
-            out.append(f"{image} was built from an older images/{name}; {rebuild}")
+            out.append(f"{image} was built from an older {where}; {rebuild}")
     return out
 
 

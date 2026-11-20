@@ -43,7 +43,16 @@ On Linux, add `--user "$(id -u):$(id -g)"` so the files a run writes into your f
 | Tag | |
 |---|---|
 | `latest`, `0.17.2`, ... | a bngsim release, amd64 and arm64 |
-| `0.17.2-amd64`, `0.17.2-arm64` | one architecture |
+| `jupyter`, `0.17.2-jupyter`, ... | the same, with JupyterLab and matplotlib |
+| `0.17.2-amd64`, `0.17.2-jupyter-arm64`, ... | one architecture |
+
+### In a notebook
+
+```bash
+docker run --rm -p 8888:8888 -v "$PWD":/work montanamendy/bngsim:jupyter
+```
+
+then open the `http://127.0.0.1:8888/lab?token=...` address it prints. JupyterLab opens in your folder (`/work`); `examples/tour.ipynb`, one level up, simulates the ligand-receptor model, plots ODE against stochastic runs, and checks the results against exact answers. On Linux, add `--user "$(id -u):$(id -g)"`, as above. The token stays on: anyone who can reach the port could otherwise run code.
 
 On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Linux: the image builds bngsim from its source release, and Antimony models are not supported there. Everything else is the same.
 
@@ -149,6 +158,24 @@ The images are published at [`montanamendy/bngsim-linux`](https://hub.docker.com
 Each is also tagged per architecture (`debian-amd64`, `debian-arm64`, `ubuntu-amd64`, `bionetgen-amd64`), and with the day and commit it was built from (`debian-20261127-18dcf7e`): a fixed tag, to rerun a result on the very image it came from after `latest` has moved on.
 
 CI publishes them ([`publish.yml`](.github/workflows/publish.yml)): when the Dockerfiles change on main, weekly from a newly pulled base (`build --fresh`, so the distributions' security updates are in), and on demand. Each image is built on a native runner of its architecture and checked inside before it is pushed, and every tag is checked to name this repository as its source.
+
+### In one command, with nothing else installed
+
+Each test image carries `bngsim-test`: it fetches bngsim from GitHub (a pull request, a branch or tag, or main), builds it, and runs its tests. No clone of this repository, no checkout of bngsim:
+
+```bash
+docker run --rm montanamendy/bngsim-linux bngsim-test --pr 1774                  # a pull request's head
+docker run --rm montanamendy/bngsim-linux bngsim-test --pr 1774 --merge-main     # merged with main, as CI tests it
+docker run --rm montanamendy/bngsim-linux bngsim-test --ref main python/tests/test_x.py
+docker run --rm montanamendy/bngsim-linux:ubuntu bngsim-test --pr 1774           # in the image set up as CI
+docker run --rm -v ~/work/bngsim:/tree:ro montanamendy/bngsim-linux bngsim-test  # your own checkout
+```
+
+The first build compiles bngsim (10 to 20 minutes on a laptop). A volume at `/ccache` keeps the compiles, so the next run takes about half a minute: add `-v bngsim-ccache:/ccache`. A merge that conflicts stops the run and names the files. `bngsim-test --help` lists the rest.
+
+The CLI below does more: it sorts failures against main (`compare`) and against the standing ones, keeps a cache per image for you, and tests a tree merged with main.
+
+### With the CLI
 
 Give one to any command with `--image`; `--arch` picks the architecture of a multi-architecture tag:
 
