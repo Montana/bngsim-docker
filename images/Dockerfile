@@ -42,6 +42,11 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 ENV UV_LINK_MODE=copy \
     CMAKE_BUILD_PARALLEL_LEVEL=2 \
     SUNLOGGER_WARNING_FILENAME=/dev/null
+# Where the image comes from, and what it is for: Docker Hub and other tools
+# read these (the OCI image annotations) to link the image to its source.
+LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker" \
+      org.opencontainers.image.description="Linux test images for bngsim, the BioNetGen simulation engine from Los Alamos National Laboratory"
+
 # A copy of this file, which the CLI compares with the repository's to say when
 # the image is older than its Dockerfile. Last, so no other layer depends on
 # it.

@@ -141,3 +141,11 @@ def test_on_arm64_bngsim_installs_without_antimony():
     assert '[ "$(uname -m)" = aarch64 ]' in script and "--no-install-package antimony" in script
     # The log is started once, then appended to, so the arm64 note stays in it.
     assert script.index(": > /out/build.log") < script.index('"${SKIP[@]}" >> /out/build.log')
+
+
+@pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen"])
+def test_each_image_names_its_source(name):
+    """Docker Hub links an image to the repository its OCI source label names."""
+    text = (ROOT / "images" / name).read_text(encoding="utf-8")
+    assert 'org.opencontainers.image.source="https://github.com/Montana/bngsim-docker"' in text
+    assert "org.opencontainers.image.description=" in text
