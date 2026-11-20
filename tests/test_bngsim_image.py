@@ -110,7 +110,11 @@ def test_jupyterlab_asks_for_its_token_and_opens_in_work(tmp_path):
     import urllib.request
 
     (tmp_path / "mine.txt").write_text("x")
-    cid = subprocess.run(["docker", "run", "-d", "--rm", "--platform", f"linux/{ARCH}", "--user", "1234:1234",
+    # As the README says to run it: as the user who owns the mounted folder. On
+    # Linux any other user cannot see into a private folder (Docker Desktop on a
+    # Mac does not check), and Jupyter reports it as not found.
+    me = f"{os.getuid()}:{os.getgid()}"
+    cid = subprocess.run(["docker", "run", "-d", "--rm", "--platform", f"linux/{ARCH}", "--user", me,
                           "-p", "127.0.0.1::8888", "-v", f"{tmp_path}:/work", JUPYTER],
                          capture_output=True, text=True, check=True).stdout.strip()
     try:
