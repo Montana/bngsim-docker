@@ -1,0 +1,126 @@
+name: publish
+
+# Builds the images and pushes them to Docker Hub (montanamendy/bngsim-linux):
+# when the Dockerfiles change on main, weekly from a freshly pulled base (the
+# distributions' security updates), and on demand. Each image is checked
+# inside (tests/test_container.py) before it is pushed. Tags:
+#   debian, latest   amd64 + arm64        ubuntu, bionetgen   amd64
+#   <tag>-amd64 / <tag>-arm64             one architecture
+#   <tag>-<YYYYMMDD>-<commit>             fixed, to pin a run to the very image
+on:
+  push:
+    branches: [main]
+    paths: ["images/**", ".github/workflows/publish.yml"]
+  schedule:
+    - cron: "41 5 * * 1"  # weekly, before ci.yml's run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  REPO: montanamendy/bngsim-linux
+  HUB_USER: montanamendy
+
+jobs:
+  build:
+    name: build, check and push (${{ matrix.arch }})
+    # Forks have no token and are not the publisher.
+    if: github.repository == 'Montana/bngsim-docker'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            kinds: "bionetgen ubuntu"  # bionetgen builds the Debian image first
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            kinds: "debian"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest==8.3.5
+      - name: build
+        env:
+          FRESH: ${{ github.event_name == 'schedule' }}
+        run: |
+          extra=()
+          if [ "$FRESH" = true ]; then extra+=(--fresh); fi
+          for kind in ${{ matrix.kinds }}; do
+            python bngsim_docker.py build --arch ${{ matrix.arch }} --kind "$kind" "${extra[@]}"
+          done
+      - name: check inside each image
+        run: |
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            images="bngsim-linux-amd64:latest bngsim-linux-ubuntu:latest bngsim-linux-bionetgen:latest"
+          else
+            images="bngsim-linux-arm64:latest"
+          fi
+          for image in $images; do
+            echo "== $image"
+            BNGSIM_DOCKER_IMAGE="$image" BNGSIM_DOCKER_ARCH=${{ matrix.arch }} python -m pytest -q -rs tests/test_container.py
+          done
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ env.HUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: push
+        run: |
+          push() {  # local image, tag
+            docker tag "$1" "${REPO}:${2}-${{ matrix.arch }}"
+            docker push -q "${REPO}:${2}-${{ matrix.arch }}"
+          }
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            push bngsim-linux-amd64:latest debian
+            push bngsim-linux-ubuntu:latest ubuntu
+            push bngsim-linux-bionetgen:latest bionetgen
+          else
+            push bngsim-linux-arm64:latest debian
+          fi
+
+  tags:
+    name: multi-architecture and fixed tags
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ env.HUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: stamp
+        run: echo "stamp=$(date -u +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: tag
+        env:
+          STAMP: ${{ steps.stamp.outputs.stamp }}
+        run: |
+          docker buildx imagetools create -t "${REPO}:debian" -t "${REPO}:latest" -t "${REPO}:debian-${STAMP}" \
+            "${REPO}:debian-amd64" "${REPO}:debian-arm64"
+          for kind in ubuntu bionetgen; do
+            docker buildx imagetools create -t "${REPO}:${kind}" -t "${REPO}:${kind}-${STAMP}" "${REPO}:${kind}-amd64"
+          done
+      - name: every tag names this repository as its source
+        env:
+          STAMP: ${{ steps.stamp.outputs.stamp }}
+          # One image, or one per platform (a multi-architecture tag): each must name its source.
+          CHECK: |
+            import json, sys
+            d = json.load(sys.stdin)
+            images = [d] if "config" in d else list(d.values())
+            bad = [i.get("architecture") for i in images
+                   if (i.get("config", {}).get("Labels") or {}).get("org.opencontainers.image.source")
+                   != "https://github.com/Montana/bngsim-docker"]
+            print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
+            sys.exit(1 if bad else 0)
+        run: |
+          for tag in latest debian ubuntu bionetgen "debian-${STAMP}" "ubuntu-${STAMP}" "bionetgen-${STAMP}"; do
+            docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "${REPO}:${tag}"
+          done

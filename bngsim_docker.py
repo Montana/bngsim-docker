@@ -112,14 +112,18 @@ def ccache_volume(arch: str, kind: str) -> str:
     return f"bngsim-ccache-{kind}-{arch}"
 
 
-def build_commands(arch: str, kind: str) -> list[list[str]]:
-    """The docker builds for an image: BioNetGen's is built on the Debian one."""
+def build_commands(arch: str, kind: str, fresh: bool = False) -> list[list[str]]:
+    """The docker builds for an image: BioNetGen's is built on the Debian one.
+    `fresh` rebuilds every layer from a newly pulled base (Debian's or Ubuntu's
+    security updates); BioNetGen's base is the local Debian image, built just
+    before, so it is not pulled."""
     if kind == "bionetgen" and arch != "amd64":
         raise SystemExit("BioNetGen's Linux release is x86-64 only: --kind bionetgen needs --arch amd64")
 
     def build(k: str, *extra: str) -> list[str]:
+        new = (["--no-cache"] if k == "bionetgen" else ["--pull", "--no-cache"]) if fresh else []
         return ["docker", "build", "--platform", f"linux/{arch}", "-t", image_name(arch, k),
-                "-f", str(IMAGES / DOCKERFILE[k]), *extra, str(IMAGES)]
+                "-f", str(IMAGES / DOCKERFILE[k]), *new, *extra, str(IMAGES)]
 
     if kind == "bionetgen":
         return [build("debian"), build("bionetgen", "--build-arg", f"BASE={image_name(arch)}")]
@@ -847,7 +851,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="debian (default), ubuntu (as bngsim's CI) or bionetgen")
     common.add_argument("--dry-run", action="store_true", help="print the commands; run nothing")
 
-    sub.add_parser("build", parents=[common], help="build an image")
+    p = sub.add_parser("build", parents=[common], help="build an image")
+    p.add_argument("--fresh", action="store_true",
+                   help="pull the base image again and build every layer anew (picks up security updates)")
     for name, helptext in (("probe", "does a container start?"),
                            ("doctor", "probe; restart Docker Desktop if no container starts")):
         p = sub.add_parser(name, parents=[common], help=helptext)
@@ -899,7 +905,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == "build":
-        for cmd in build_commands(a.arch, a.kind):
+        for cmd in build_commands(a.arch, a.kind, a.fresh):
             if sh(cmd, dry=a.dry_run, capture=False).returncode != 0:
                 return 1
         return 0

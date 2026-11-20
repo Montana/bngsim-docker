@@ -104,7 +104,9 @@ The images are published at [`montanamendy/bngsim-linux`](https://hub.docker.com
 | `ubuntu` | the Ubuntu image, set up as bngsim's CI | amd64 |
 | `bionetgen` | the Debian image with BioNetGen 2.9.3 | amd64 |
 
-Each is also tagged per architecture (`debian-amd64`, `debian-arm64`, `ubuntu-amd64`, `bionetgen-amd64`).
+Each is also tagged per architecture (`debian-amd64`, `debian-arm64`, `ubuntu-amd64`, `bionetgen-amd64`), and with the day and commit it was built from (`debian-20261127-18dcf7e`): a fixed tag, to rerun a result on the very image it came from after `latest` has moved on.
+
+CI publishes them ([`publish.yml`](.github/workflows/publish.yml)): when the Dockerfiles change on main, weekly from a newly pulled base (`build --fresh`, so the distributions' security updates are in), and on demand. Each image is built on a native runner of its architecture and checked inside before it is pushed, and every tag is checked to name this repository as its source.
 
 Give one to any command with `--image`; `--arch` picks the architecture of a multi-architecture tag:
 
@@ -311,6 +313,7 @@ BNGSIM_DOCKER_IMAGE=bngsim-linux-bionetgen:latest python -m pytest -q tests/test
 | build the images, check inside them | ubuntu-latest | builds the Debian, Ubuntu and BioNetGen images and runs `test_container.py` in each |
 | bngsim main, the whole suite (weekly) | ubuntu-latest | weekly and on demand: all of bngsim's suite on main in the Debian image, on native x86-64, with `--fail-on-stale`, so a new failure or a standing one that passed fails the job |
 | the arm64 image | ubuntu-24.04-arm | builds the arm64 image and checks inside it |
+| publish (`publish.yml`) | ubuntu-latest, ubuntu-24.04-arm | on a Dockerfile change on main, weekly (`--fresh`) and on demand: builds, checks inside, pushes to Docker Hub, makes the multi-architecture and fixed tags |
 | bngsim main, built and tested in the image | ubuntu-latest | builds bngsim's main through the CLI and runs a few of its test files; also weekly, as main moves |
 
 ## Requirements

@@ -534,3 +534,13 @@ def test_a_tree_from_no_checkout_carries_no_list(tmp_path):
     (src / "a.py").write_text("a\n")
     bd.copy_tree(src, dest, dry=False)
     assert not (dest / bd.TRACKED).exists() and not (dest / bd.HEAD).exists()
+
+
+def test_a_fresh_build_pulls_the_distribution_base_but_not_the_local_one():
+    (debian,) = bd.build_commands("amd64", "debian", fresh=True)
+    assert "--pull" in debian and "--no-cache" in debian
+    base, bng = bd.build_commands("amd64", "bionetgen", fresh=True)
+    assert "--pull" in base and "--no-cache" in base
+    # BioNetGen's base is the Debian image just built here: pulling it would ask Docker Hub for it.
+    assert "--pull" not in bng and "--no-cache" in bng
+    assert not {"--pull", "--no-cache"} & set(bd.build_commands("amd64", "ubuntu")[0])
