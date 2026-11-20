@@ -209,6 +209,12 @@ jobs:
             "montanamendy/bngsim:${VERSION}-amd64" "montanamendy/bngsim:${VERSION}-arm64"
           docker buildx imagetools create -t "montanamendy/bngsim:${VERSION}-jupyter" -t montanamendy/bngsim:jupyter \
             "montanamendy/bngsim:${VERSION}-jupyter-amd64" "montanamendy/bngsim:${VERSION}-jupyter-arm64"
+          # The same images under bngsim-linux too, so its page serves everyone: run
+          # (bngsim ready) and jupyter (for teaching), beside the test images.
+          docker buildx imagetools create -t montanamendy/bngsim-linux:run -t "montanamendy/bngsim-linux:run-${VERSION}" \
+            "montanamendy/bngsim:${VERSION}-amd64" "montanamendy/bngsim:${VERSION}-arm64"
+          docker buildx imagetools create -t montanamendy/bngsim-linux:jupyter -t "montanamendy/bngsim-linux:jupyter-${VERSION}" \
+            "montanamendy/bngsim:${VERSION}-jupyter-amd64" "montanamendy/bngsim:${VERSION}-jupyter-arm64"
       - name: both architectures name this repository as their source
         env:
           CHECK: |
@@ -221,6 +227,9 @@ jobs:
             print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
             sys.exit(1 if bad or len(images) != 2 else 0)
         run: |
-          for tag in latest "${VERSION}" jupyter "${VERSION}-jupyter"; do
-            docker buildx imagetools inspect "montanamendy/bngsim:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim:${tag}"
+          for ref in latest "${VERSION}" jupyter "${VERSION}-jupyter"; do
+            docker buildx imagetools inspect "montanamendy/bngsim:${ref}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim:${ref}"
+          done
+          for ref in run "run-${VERSION}" jupyter "jupyter-${VERSION}"; do
+            docker buildx imagetools inspect "montanamendy/bngsim-linux:${ref}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim-linux:${ref}"
           done

@@ -4,7 +4,9 @@
 
 Docker images and a small CLI for running [bngsim](https://github.com/lanl/bngsim)'s tests on Linux, and an image for running bngsim itself.
 
-**Just want to run bngsim?** [`montanamendy/bngsim`](https://hub.docker.com/r/montanamendy/bngsim) has it installed with BioNetGen, so a BNGL model loads with no Perl or BioNetGen to set up. See [Run bngsim](#run-bngsim).
+**Just want to run bngsim?** [`montanamendy/bngsim`](https://hub.docker.com/r/montanamendy/bngsim) has it installed with BioNetGen, so a BNGL model loads with no Perl or BioNetGen to set up. See [Run bngsim](#run-bngsim). **Teaching with it?** See [For teachers](#for-teachers): students can open it in the browser with nothing installed.
+
+[![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb)
 
 A fix that depends on rounding can pass on Apple Silicon and fail on CI's x86-64 Linux. These images let a bngsim tree be built from source and tested on Linux, on a Mac or anywhere Docker runs, before its pull request is opened. The Debian image is the one [bngsim-preflights](https://github.com/Montana/bngsim-preflights)' `linux_check.py` runs (`bngsim-linux-amd64:latest`), written down so it can be rebuilt the same way.
 
@@ -58,6 +60,28 @@ On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Lin
 
 Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and (amd64) an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed; a user other than root compiles a model, and the examples agree with their exact answers ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
 
+## For teachers
+
+**In the browser, nothing installed.** This link opens JupyterLab with bngsim, BioNetGen and the examples, on [mybinder.org](https://mybinder.org), a free public service:
+
+[![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb)
+
+It opens on `examples/tour.ipynb`: a rule-based ligand-receptor model in BNGL, simulated as ODEs and stochastically, plotted, and checked against its exact answer; and an SBML model. Students can edit and run every cell. A Binder session is temporary (it ends after a while idle, and nothing is kept), and the first launch after an update can take a few minutes while Binder builds it. For coursework that must be kept, use Docker.
+
+**With Docker, the same for every student:**
+
+```bash
+docker run --rm -p 8888:8888 -v "$PWD":/work montanamendy/bngsim:jupyter
+```
+
+then open the `http://127.0.0.1:8888/lab?token=...` address it prints; work saved in `/work` is in the folder the command was run from. To give a whole class the identical version for a course, name it: `montanamendy/bngsim:0.17.2-jupyter`. The same images are on `montanamendy/bngsim-linux` too, as `jupyter` and `run`.
+
+**Without Jupyter**, one command runs the examples and prints the results with their exact answers:
+
+```bash
+docker run --rm montanamendy/bngsim python /examples/run.py
+```
+
 ## How a run goes
 
 This is how a run goes when using `bngsim-docker`: 
@@ -68,6 +92,7 @@ This is how a run goes when using `bngsim-docker`:
 ## Contents
 
 - [Run bngsim](#run-bngsim)
+- [For teachers](#for-teachers)
 - [How a run goes](#how-a-run-goes)
 - [The images](#the-images)
 - [Which image for which question](#which-image-for-which-question)

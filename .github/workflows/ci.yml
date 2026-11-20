@@ -31,7 +31,7 @@ jobs:
         run: shellcheck scripts/*.sh
       - name: hadolint
         run: |
-          for f in images/Dockerfile images/Dockerfile.ubuntu images/Dockerfile.bionetgen images/Dockerfile.bngsim; do
+          for f in images/Dockerfile images/Dockerfile.ubuntu images/Dockerfile.bionetgen images/Dockerfile.bngsim binder/Dockerfile; do
             docker run --rm -i hadolint/hadolint:v2.12.0 hadolint --ignore DL3008 --ignore DL3013 - < "$f"
           done
 

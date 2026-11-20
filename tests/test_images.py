@@ -193,3 +193,17 @@ def test_the_jupyter_image_pins_its_versions_and_keeps_the_token():
     # Anyone who reached the port could run code without it.
     assert "token=''" not in jupyter and "IdentityProvider.token" not in jupyter and "--NotebookApp.token" not in jupyter
     assert (ROOT / "images" / "examples" / "tour.ipynb").is_file()
+
+
+def test_the_binder_image_is_the_jupyter_one_set_up_as_binder_needs():
+    """mybinder.org runs the server itself, as uid 1000, through jupyterhub-singleuser."""
+    binder = (ROOT / "binder" / "Dockerfile").read_text(encoding="utf-8")
+    assert "FROM montanamendy/bngsim:jupyter" in binder
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _arg(binder, "JUPYTERHUB_VERSION"))
+    assert _arg(binder, "NB_UID") == "1000" and "USER ${NB_USER}" in binder
+    assert 'cp -r /examples "/home/${NB_USER}/examples"' in binder
+
+
+def test_the_readme_s_binder_link_opens_the_tour():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb" in readme
