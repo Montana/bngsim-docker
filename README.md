@@ -21,6 +21,7 @@ This is how a run goes when using `bngsim-docker`:
 - [The images](#the-images)
 - [Which image for which question](#which-image-for-which-question)
 - [Quick start](#quick-start)
+- [Pull from Docker Hub](#pull-from-docker-hub)
 - [Commands](#commands)
 - [Settings](#settings)
 - [Compose](#compose)
@@ -92,6 +93,35 @@ python bngsim_docker.py clean --dry-run              # what clean would remove, 
 python bngsim_docker.py clean                        # remove the compiler caches
 python bngsim_docker.py clean --images               # and the images
 ```
+
+## Pull from Docker Hub
+
+The images are published at [`montanamendy/bngsim-linux`](https://hub.docker.com/r/montanamendy/bngsim-linux), built from this repository's Dockerfiles, so a run need not build them first:
+
+| Tag | Image | Architectures |
+|---|---|---|
+| `debian`, `latest` | the Debian image | amd64, arm64 |
+| `ubuntu` | the Ubuntu image, set up as bngsim's CI | amd64 |
+| `bionetgen` | the Debian image with BioNetGen 2.9.3 | amd64 |
+
+Each is also tagged per architecture (`debian-amd64`, `debian-arm64`, `ubuntu-amd64`, `bionetgen-amd64`).
+
+Give one to any command with `--image`; `--arch` picks the architecture of a multi-architecture tag:
+
+```bash
+python bngsim_docker.py test --tree ~/work/bngsim --image montanamendy/bngsim-linux:debian --arch arm64
+python bngsim_docker.py test --tree ~/work/bngsim --image montanamendy/bngsim-linux:ubuntu
+python bngsim_docker.py bng2 model.bngl --image montanamendy/bngsim-linux:bionetgen
+```
+
+Or tag it with the local name the CLI (and bngsim-preflights' `linux_check.py`) uses by default:
+
+```bash
+docker pull --platform linux/amd64 montanamendy/bngsim-linux:debian
+docker tag montanamendy/bngsim-linux:debian bngsim-linux-amd64:latest
+```
+
+The staleness check works on these too: each image carries the Dockerfiles it was built from, and `test` warns when this repository's have changed since, the sign to build locally instead.
 
 ## Commands
 
