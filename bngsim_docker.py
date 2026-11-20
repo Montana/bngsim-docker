@@ -402,7 +402,8 @@ class Where:
     dry: bool
 
 
-PRIVATE_REFS = "refs/bngsim-docker"  # where --pr and --merge-main fetch to, apart from the tree's own refs
+PRIVATE_REFS = "refs/bngsim-docker"
+BNGSIM_URL = "https://github.com/lanl/bngsim"  # where --pr and --merge-main fetch to, apart from the tree's own refs
 
 
 def _git(tree: Path, *args: str, dry: bool, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -476,6 +477,33 @@ def carry_uncommitted(tree: Path, wt: Path, *, dry: bool) -> list[str]:
         shutil.copy2(tree / f, wt / f, follow_symlinks=False)
     _git(wt, "add", "--all", dry=False)
     return untracked
+
+
+def is_bngsim_checkout(tree: Path) -> bool:
+    """A git checkout of bngsim (not of another repository, such as this one)."""
+    if not (tree / "python" / "bngsim").is_dir():
+        return False
+    return subprocess.run(["git", "-C", str(tree), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
+
+
+@contextlib.contextmanager
+def checkout_for_pr(a: argparse.Namespace, *, dry: bool) -> Iterator[None]:
+    """With --pr and no bngsim checkout at --tree, a clone of --repo-url to fetch
+    the pull request (and main) from: partial (file contents come only with the
+    commits checked out), in a scratch directory, removed afterwards. It becomes
+    --tree, and its origin --remote, for the run."""
+    if a.pr is None or dry or is_bngsim_checkout(a.tree.resolve()):
+        yield
+        return
+    with tempfile.TemporaryDirectory(prefix="bngsim-docker-clone-", ignore_cleanup_errors=True) as scratch:
+        clone = Path(scratch) / "bngsim"
+        print(f"{a.tree.resolve()} is no bngsim checkout: cloning {a.repo_url} to fetch pull request {a.pr} from",
+              flush=True)
+        r = sh(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", a.repo_url, str(clone)], dry=False)
+        if r.returncode != 0:
+            raise SystemExit(f"cannot clone {a.repo_url}: {r.stderr.strip()}")
+        a.tree, a.remote = clone, "origin"
+        yield
 
 
 @contextlib.contextmanager
@@ -659,8 +687,9 @@ def _start(w: Where, kind: str) -> list[str]:
 def cmd_test(a: argparse.Namespace) -> int:
     w = _where(a)
     warnings = _start(w, a.kind)
-    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
-                       remote=a.remote, dry=w.dry) as tree:
+    with (checkout_for_pr(a, dry=w.dry),
+          prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
+                        remote=a.remote, dry=w.dry) as tree):
         run = run_tree(tree, a.out, a.tests, w)
     if w.dry:
         return 0
@@ -692,6 +721,11 @@ def cmd_test(a: argparse.Namespace) -> int:
 
 
 def cmd_compare(a: argparse.Namespace) -> int:
+    with checkout_for_pr(a, dry=a.dry_run):
+        return _compare(a)
+
+
+def _compare(a: argparse.Namespace) -> int:
     w = _where(a)
     warnings = _start(w, a.kind)
     with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
@@ -706,20 +740,28 @@ def cmd_compare(a: argparse.Namespace) -> int:
     if not branch.summary:
         _report(a.out, [*lines, "the branch's run did not finish"])
         return 1
-    if not branch.failed:
-        _report(a.out, [*lines, "nothing fails on the branch"])
+    # On arm64 a failure that is only antimony missing is the image's: it is not
+    # rerun on main, where it would fail alike.
+    no_antimony, rerun = needs_antimony(branch.failed, branch.messages) if w.arch == "arm64" else ([], branch.failed)
+    if no_antimony:
+        lines.append(f"  {len(no_antimony)} failure(s) only because the arm64 image has no antimony (no Linux "
+                     "aarch64 wheel), not rerun on main; the amd64 images run them")
+        lines += [f"  needs antimony: {t}" for t in no_antimony]
+    if not rerun:
+        _report(a.out, [*lines, "nothing fails on the branch" if not no_antimony else
+                        "no failure but antimony missing"])
         return 0
     with main_tree(a, dry=False) as (m, warn):
         if warn:
             print(warn, file=sys.stderr, flush=True)
             lines.insert(1, warn)
-        main = run_tree(m, a.out / "main", branch.failed, w)
-    lines.append(f"main, the branch's {len(branch.failed)} failure(s) run again: "
+        main = run_tree(m, a.out / "main", rerun, w)
+    lines.append(f"main, the branch's {len(rerun)} failure(s) run again: "
                  f"{main.summary or 'no pytest summary (see main/build.log)'}")
     if not main.summary:
         _report(a.out, [*lines, "the run on main did not finish"])
         return 1
-    both, only = compare_failures(branch.failed, main.failed)
+    both, only = compare_failures(rerun, main.failed)
     lines += [f"  fails on main too: {t}" for t in both]
     lines += [f"  BRANCH ONLY: {t}" for t in only]
     lines.append("failures that are the branch's" if only else "every failure fails on main too")
@@ -804,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--uncommitted", action="store_true",
                        help="with --merge-main: carry the tree's uncommitted edits and untracked files in")
         p.add_argument("--remote", default="origin", help="where --pr and --merge-main fetch from (default origin)")
+        p.add_argument("--repo-url", default=BNGSIM_URL,
+                       help="with --pr and no bngsim checkout at --tree: the repository to clone (default lanl/bngsim)")
         if name == "shell":
             continue
         if name == "compare":
@@ -862,7 +906,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_bng2(a)
     # shell
     image = a.image or image_name(a.arch, a.kind)
-    with (prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
+    with (checkout_for_pr(a, dry=a.dry_run),
+          prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, uncommitted=a.uncommitted,
                         remote=a.remote, dry=a.dry_run) as tree,
           tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch):
         copy = Path(scratch) / "src"

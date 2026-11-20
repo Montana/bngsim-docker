@@ -83,6 +83,7 @@ python bngsim_docker.py compare --tree ~/work/branch --merge-main   # main: the 
 python bngsim_docker.py test --tree ~/work/bngsim --merge-main   # its commit merged with main
 python bngsim_docker.py test --tree ~/work/bngsim --merge-main --uncommitted   # and its edits not yet committed
 python bngsim_docker.py test --tree ~/work/bngsim --pr 1774      # a pull request's head
+python bngsim_docker.py test --pr 1774                           # from anywhere: clones lanl/bngsim for it
 python bngsim_docker.py shell --tree ~/work/bngsim   # a shell, the tree copied to /src
 
 python bngsim_docker.py bng2 model.bngl              # BNG2.pl 2.9.3; files to bng2-out/model
@@ -133,6 +134,7 @@ And by `test` and `compare`:
 | `--merge-main` | off | test the commit (the tree's, or the pull request's) merged with `--remote`'s main; also `shell` |
 | `--uncommitted` | off | with `--merge-main`: carry the tree's uncommitted edits, deletions and untracked files (not ignored ones) onto the merge; changes that do not apply to it stop the run |
 | `--remote` | `origin` | where `--pr` and `--merge-main` fetch from |
+| `--repo-url` | `https://github.com/lanl/bngsim` | with `--pr` and no bngsim checkout at `--tree`: the repository to clone (partially, in a scratch directory, removed afterwards), so `--pr` works from anywhere |
 
 With `--pr` or `--merge-main` the run tests a commit, not the tree as it stands: the commit is checked out in a worktree of the tree's repository, in a scratch directory, and removed afterwards. Every file the commit tracks is there (a checkout that has deleted or not yet made a file, such as `uv.lock`, still tests with it, unless `--uncommitted` carries the deletion in), and uncommitted changes are not unless `--uncommitted` carries them in (a warning says when the tree has some). The fetches go to `refs/bngsim-docker/`, so the tree's own branches and `origin/*` do not move. A merge that conflicts stops the run and names the files.
 
@@ -208,7 +210,7 @@ The CLI and Compose use the same names, so they fill the same cache. The images'
 
 ## Failures that are the container's
 
-**On arm64**, bngsim is installed without antimony (it ships no Linux aarch64 wheel), so every test that loads an Antimony model fails there. `test` reads each failure's message from pytest's JUnit XML and, on an arm64 image only, reports a failure whose error is antimony missing as `needs antimony`, not as the tree's; a test that fails for any other reason still counts. For a verdict on those tests, use an amd64 image.
+**On arm64**, bngsim is installed without antimony (it ships no Linux aarch64 wheel), so every test that loads an Antimony model fails there. `test` reads each failure's message from pytest's JUnit XML and, on an arm64 image only, reports a failure whose error is antimony missing as `needs antimony`, not as the tree's (and `compare` does not rerun it on main, where it would fail alike); a test that fails for any other reason still counts. For a verdict on those tests, use an amd64 image.
 
 A handful of tests fail in these containers on bngsim's main too. [`known-failures.txt`](known-failures.txt) lists them, each with its reason, so a red `test` run says at once whether it is the tree:
 

@@ -368,3 +368,74 @@ def test_shell_passes_uncommitted_on(monkeypatch, tmp_path):
     monkeypatch.setattr(bd, "prepared_tree", prepared)
     bd.main(["shell", "--tree", str(tmp_path), "--merge-main", "--uncommitted", "--dry-run"])
     assert seen["uncommitted"] and seen["merge_main"]
+
+
+# ── compare skips antimony on arm64; --pr without a checkout ────────────────
+
+
+def _compare_on(monkeypatch, tmp_path, arch):
+    (tmp_path / "junit.xml").write_text(JUNIT)
+    msgs = {t: bd.junit_messages(tmp_path / "junit.xml")[bd.junit_key(t)] for t in IDS}
+    asked = []
+
+    def run_tree(tree, out, tests, w):
+        out.mkdir(parents=True, exist_ok=True)
+        if out.name == "branch":
+            return bd.Run("3 failed", failed=list(IDS), messages=msgs)
+        asked.append(list(tests))
+        return bd.Run("1 passed", passed=list(tests))
+
+    monkeypatch.setattr(bd, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(bd, "stale_image", lambda *a, **k: [])
+    monkeypatch.setattr(bd, "run_tree", run_tree)
+    rc = bd.main(["compare", "--tree", str(tmp_path), "--main", str(tmp_path), "--arch", arch,
+                  "--out", str(tmp_path / "o")])
+    return rc, asked, (tmp_path / "o" / "docker.log").read_text()
+
+
+def test_compare_on_arm64_does_not_rerun_antimony_missing(monkeypatch, tmp_path):
+    rc, asked, log = _compare_on(monkeypatch, tmp_path, "arm64")
+    assert asked == [IDS[2:]] and "2 failure(s) only because the arm64 image has no antimony" in log
+    assert rc == 1 and "BRANCH ONLY: " + IDS[2] in log
+
+
+def test_compare_on_amd64_reruns_every_failure(monkeypatch, tmp_path):
+    rc, asked, log = _compare_on(monkeypatch, tmp_path, "amd64")
+    assert asked == [IDS] and "needs antimony" not in log
+
+
+def _pr_args(tree, remote_url):
+    import argparse
+    return argparse.Namespace(tree=tree, pr=7, remote="upstream", repo_url=str(remote_url))
+
+
+@pytest.mark.parametrize("where", ["not a checkout", "another repository"])
+def test_pr_without_a_bngsim_checkout_clones_one(repos, tmp_path, where):
+    remote, _ = repos
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    if where == "another repository":
+        git(elsewhere, "init", "-q")
+        commit(elsewhere, {"other.txt": "x\n"}, "other")
+    a = _pr_args(elsewhere, remote)
+    with bd.checkout_for_pr(a, dry=False):
+        clone = a.tree
+        assert clone != elsewhere and a.remote == "origin"
+        with bd.prepared_tree(a.tree, pr=a.pr, merge_main=True, remote=a.remote) as t:
+            assert (t / "pr.txt").is_file() and (t / "main.txt").is_file()
+    assert not clone.exists()
+    assert not (elsewhere / "pr.txt").exists()
+
+
+def test_pr_with_a_bngsim_checkout_uses_it(repos):
+    remote, tree = repos
+    a = _pr_args(tree, remote)
+    with bd.checkout_for_pr(a, dry=False):
+        assert a.tree == tree and a.remote == "upstream"
+
+
+def test_a_repository_that_cannot_be_cloned_is_named(tmp_path):
+    a = _pr_args(tmp_path, tmp_path / "no-such-repo")
+    with pytest.raises(SystemExit, match="cannot clone"):
+        with bd.checkout_for_pr(a, dry=False):
+            pass
