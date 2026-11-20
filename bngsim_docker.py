@@ -11,7 +11,10 @@ bngsim tree's tests in one.
     python bngsim_docker.py test --tree ~/work/bngsim   # the whole of python/tests
     python bngsim_docker.py test --tree ~/work/bngsim --tests python/tests/test_x.py --kind ubuntu
     python bngsim_docker.py compare --tree ~/work/branch --main ~/work/main
+    python bngsim_docker.py test --tree ~/work/bngsim --merge-main   # its commit merged with main
+    python bngsim_docker.py test --tree ~/work/bngsim --pr 1774      # a pull request's head
     python bngsim_docker.py shell --tree ~/work/bngsim
+    python bngsim_docker.py bng2 model.bngl             # BNG2.pl 2.9.3 on a model; files to ./bng2-out
     python bngsim_docker.py test --tree . --dry-run     # print the commands, run nothing
     python bngsim_docker.py clean                       # remove the compiler caches
     python bngsim_docker.py clean --images              # and the images
@@ -43,6 +46,19 @@ Each image keeps a copy of the Dockerfiles it was built from; `test` and
 `compare` warn where it differs from this repository's, as after a change such
 as ccache that the image was not rebuilt for.
 
+`--pr N` tests a pull request's head, fetched from the tree's `origin`
+(`--remote` names another), and `--merge-main` tests the tree's commit, or the
+pull request's, merged with that remote's main: two branches that each pass
+alone can fail together, as when each changes a count a test pins. Either
+checks the commit out in a worktree of the tree's repository, in a scratch
+directory, so what is tested is the commit and every file it tracks, and not
+the tree's uncommitted changes; the worktree is removed afterwards. A merge
+that conflicts stops the run and names the files.
+
+`bng2` runs BNG2.pl, in the BioNetGen image, on a model: the model's directory
+is mounted read-only, and the files BNG2.pl writes (the .net, the .gdat, ...)
+and its log go to `--out` (default `bng2-out/<model>`).
+
 `probe` asks for a real container, not `docker info`: after an update Docker
 Desktop on macOS can answer `docker info` and start no container. `doctor`
 then quits Docker Desktop by its full name, stops its backend, opens it again,
@@ -57,6 +73,7 @@ names are not touched.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -69,6 +86,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -342,6 +360,103 @@ class Where:
     dry: bool
 
 
+PRIVATE_REFS = "refs/bngsim-docker"  # where --pr and --merge-main fetch to, apart from the tree's own refs
+
+
+def _git(tree: Path, *args: str, dry: bool) -> subprocess.CompletedProcess:
+    return sh(["git", "-C", str(tree), *args], dry=dry)
+
+
+@contextlib.contextmanager
+def prepared_tree(tree: Path, *, pr: int | None = None, merge_main: bool = False,
+                  remote: str = "origin", dry: bool = False) -> Iterator[Path]:
+    """The tree to copy into the container: `tree` itself, or, with `pr` or
+    `merge_main`, a worktree of its repository at the pull request's head (or
+    the tree's HEAD), merged with `remote`'s main if asked (left uncommitted:
+    no author is needed). The worktree is in a scratch directory and removed
+    on the way out, whatever happens."""
+    if pr is None and not merge_main:
+        yield tree
+        return
+    tree = tree.resolve()
+    if not dry and subprocess.run(["git", "-C", str(tree), "rev-parse", "--git-dir"],
+                                  capture_output=True).returncode != 0:
+        raise SystemExit(f"--pr and --merge-main need a git checkout: {tree} is none")
+    ref = "HEAD"
+    if pr is not None:
+        ref = f"{PRIVATE_REFS}/pr/{pr}"
+        r = _git(tree, "fetch", "--quiet", "--refmap=", remote, f"+refs/pull/{pr}/head:{ref}", dry=dry)
+        if r.returncode != 0:
+            raise SystemExit(f"cannot fetch pull request {pr} from {remote}: {r.stderr.strip()}")
+    elif not dry:
+        dirty = _git(tree, "status", "--porcelain", "--untracked-files=no", dry=False).stdout
+        if dirty.strip():
+            print(f"WARNING: {tree} has uncommitted changes to tracked files: --merge-main tests "
+                  "its commit, without them", file=sys.stderr, flush=True)
+    main = f"{PRIVATE_REFS}/main"
+    if merge_main:
+        r = _git(tree, "fetch", "--quiet", "--refmap=", remote, f"+refs/heads/main:{main}", dry=dry)
+        if r.returncode != 0:
+            raise SystemExit(f"cannot fetch main from {remote}: {r.stderr.strip()}")
+    with tempfile.TemporaryDirectory(prefix="bngsim-docker-wt-", ignore_cleanup_errors=True) as scratch:
+        wt = Path(scratch) / "tree"
+        r = _git(tree, "worktree", "add", "--quiet", "--detach", str(wt), ref, dry=dry)
+        if r.returncode != 0:
+            raise SystemExit(f"cannot check {ref} out: {r.stderr.strip()}")
+        try:
+            if merge_main:
+                r = _git(wt, "merge", "--quiet", "--no-commit", "--no-ff", main, dry=dry)
+                if r.returncode != 0:
+                    conflicts = _git(wt, "diff", "--name-only", "--diff-filter=U", dry=dry).stdout.split()
+                    _git(wt, "merge", "--abort", dry=dry)
+                    raise SystemExit(f"{ref} does not merge with {remote}'s main: "
+                                     f"{', '.join(conflicts) or r.stdout.strip() or r.stderr.strip()}")
+            if not dry:
+                head = _git(wt, "rev-parse", "--short", "HEAD", dry=False).stdout.strip()
+                with_main = (f" merged with {remote}'s main "
+                             f"{_git(tree, 'rev-parse', '--short', main, dry=False).stdout.strip()}"
+                             if merge_main else "")
+                print(f"testing {'pull request ' + str(pr) + ' at ' if pr is not None else ''}{head}{with_main}",
+                      flush=True)
+            yield wt
+        finally:
+            # Only the worktree made here, inside the scratch directory, is removed.
+            assert wt.parent == Path(scratch)
+            _git(tree, "worktree", "remove", "--force", str(wt), dry=dry)
+            _git(tree, "worktree", "prune", dry=dry)
+
+
+def bng2_command(model: Path, out: Path, image: str, args: list[str]) -> list[str]:
+    """BNG2.pl on `model`, its directory mounted read-only at /model, its output
+    and its log written to `out`, handed back to the caller's user."""
+    log = shlex.quote(f"/out/{model.stem}.bng2.log")
+    script = (f'cd /out && perl "$BNGPATH/BNG2.pl" --outdir /out {" ".join(shlex.quote(x) for x in args)} '
+              f"{shlex.quote('/model/' + model.name)} 2>&1 | tee {log}; rc=${{PIPESTATUS[0]}}; "
+              'if [ -n "${HOST_UID:-}" ]; then chown -R "$HOST_UID:${HOST_GID:-$HOST_UID}" /out; fi; '
+              "exit $rc")
+    script = re.sub(" +", " ", script)
+    return ["docker", "run", "--rm", "--platform", "linux/amd64", *owner_env(),
+            "-v", f"{model.parent}:/model:ro", "-v", f"{out}:/out", image, "bash", "-c", script]
+
+
+def cmd_bng2(a: argparse.Namespace) -> int:
+    model = a.model.resolve()
+    if not a.dry_run and not model.is_file():
+        raise SystemExit(f"no model at {model}")
+    out = (a.out or Path("bng2-out") / model.stem).resolve()
+    image = a.image or image_name("amd64", "bionetgen")
+    if not probe(image, "amd64", dry=a.dry_run):
+        raise SystemExit(f"no container of {image} starts: build it (build --kind bionetgen), or run doctor")
+    if not a.dry_run:
+        out.mkdir(parents=True, exist_ok=True)
+    r = sh(bng2_command(model, out, image, shlex.split(a.args)), dry=a.dry_run, capture=False,
+           timeout=a.timeout)
+    if not a.dry_run:
+        files = sorted(p.name for p in out.iterdir() if p.is_file())
+        print(f"BNG2.pl exited {r.returncode}; in {out}: {', '.join(files) or 'nothing'}")
+    return r.returncode
+
+
 def run_tree(tree: Path, out: Path, tests: list[str], w: Where) -> Run:
     """Copy `tree` in, build it, run `tests`; the logs go to `out`."""
     tree = tree.resolve()
@@ -395,7 +510,8 @@ def _start(w: Where, kind: str) -> list[str]:
 def cmd_test(a: argparse.Namespace) -> int:
     w = _where(a)
     warnings = _start(w, a.kind)
-    run = run_tree(a.tree, a.out, a.tests, w)
+    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, remote=a.remote, dry=w.dry) as tree:
+        run = run_tree(tree, a.out, a.tests, w)
     if w.dry:
         return 0
     native = daemon_arch()
@@ -423,7 +539,8 @@ def cmd_test(a: argparse.Namespace) -> int:
 def cmd_compare(a: argparse.Namespace) -> int:
     w = _where(a)
     warnings = _start(w, a.kind)
-    branch = run_tree(a.tree, a.out / "branch", a.tests, w)
+    with prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, remote=a.remote, dry=w.dry) as tree:
+        branch = run_tree(tree, a.out / "branch", a.tests, w)
     if w.dry:
         run_tree(a.main, a.out / "main", ["<the branch's failures>"], w)
         return 0
@@ -520,6 +637,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--tree", type=Path, default=Path("."), help="a bngsim tree (default: here)")
         p.add_argument("--image", help="default: the --kind and --arch image")
         p.add_argument("--memory", default="10g", help="the container's memory limit (default 10g)")
+        p.add_argument("--pr", type=int, help="test this pull request's head, fetched from --remote")
+        p.add_argument("--merge-main", action="store_true",
+                       help="test the commit merged with --remote's main (two branches can fail only together)")
+        p.add_argument("--remote", default="origin", help="where --pr and --merge-main fetch from (default origin)")
         if name == "shell":
             continue
         if name == "compare":
@@ -535,6 +656,13 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--known", type=Path, default=KNOWN, help="the standing failures")
             p.add_argument("--fail-on-stale", action="store_true",
                            help="exit 1 when a standing failure passed, so the list is kept true")
+    p = sub.add_parser("bng2", help="run BNG2.pl (BioNetGen 2.9.3) on a model, in the BioNetGen image")
+    p.add_argument("model", type=Path, help="a .bngl file")
+    p.add_argument("--out", type=Path, help="where its files go (default bng2-out/<model>)")
+    p.add_argument("--args", default="", help="more arguments for BNG2.pl, as one string")
+    p.add_argument("--image", help="default: bngsim-linux-bionetgen:latest")
+    p.add_argument("--timeout", type=float, default=1800, help="seconds")
+    p.add_argument("--dry-run", action="store_true", help="print the commands; run nothing")
     p = sub.add_parser("clean", help="remove the compiler caches (and, with --images, the images)")
     p.add_argument("--images", action="store_true", help="remove the images too")
     p.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
@@ -563,11 +691,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_compare(a)
     if a.cmd == "clean":
         return cmd_clean(a)
+    if a.cmd == "bng2":
+        return cmd_bng2(a)
     # shell
     image = a.image or image_name(a.arch, a.kind)
-    with tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch:
+    with (prepared_tree(a.tree, pr=a.pr, merge_main=a.merge_main, remote=a.remote, dry=a.dry_run) as tree,
+          tempfile.TemporaryDirectory(prefix="bngsim-docker-", ignore_cleanup_errors=True) as scratch):
         copy = Path(scratch) / "src"
-        copy_tree(a.tree.resolve(), copy, dry=a.dry_run)
+        copy_tree(tree.resolve(), copy, dry=a.dry_run)
         cmd = ["docker", "run", "--rm", "-it", "--platform", f"linux/{a.arch}", "--memory", a.memory,
                "-v", f"{copy}:/src", image, "bash"]
         return sh(cmd, dry=a.dry_run, capture=False).returncode

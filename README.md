@@ -71,7 +71,11 @@ python bngsim_docker.py test --tree ~/work/bngsim    # the whole of python/tests
 python bngsim_docker.py test --tree ~/work/bngsim --tests python/tests/test_x.py
 python bngsim_docker.py test --tree ~/work/bngsim --kind ubuntu
 python bngsim_docker.py compare --tree ~/work/branch --main ~/work/main
+python bngsim_docker.py test --tree ~/work/bngsim --merge-main   # its commit merged with main
+python bngsim_docker.py test --tree ~/work/bngsim --pr 1774      # a pull request's head
 python bngsim_docker.py shell --tree ~/work/bngsim   # a shell, the tree copied to /src
+
+python bngsim_docker.py bng2 model.bngl              # BNG2.pl 2.9.3; files to bng2-out/model
 
 python bngsim_docker.py clean --dry-run              # what clean would remove, with sizes
 python bngsim_docker.py clean                        # remove the compiler caches
@@ -88,6 +92,7 @@ python bngsim_docker.py clean --images               # and the images
 | `test` | copies the tree in, builds it, runs pytest, sorts failures against [`known-failures.txt`](known-failures.txt) | 1 if a failure is not listed, or the run did not finish |
 | `compare` | runs the tree's tests, then runs each failure again on a main checkout in the same image | 1 if a failure is the branch's only, or a run did not finish |
 | `shell` | an interactive shell, the tree copied to `/src` | the shell's |
+| `bng2` | runs BNG2.pl 2.9.3 on a `.bngl` in the BioNetGen image: the model's directory mounted read-only, the files BNG2.pl writes and its log (`<model>.bng2.log`) in `--out` (default `bng2-out/<model>`); `--args` passes more arguments | BNG2.pl's |
 | `clean` | lists the cache volumes and images this tool makes, with their sizes, and removes the caches (`--images`: the images too). Volumes and images of other names are left alone | 1 if Docker refuses one, such as a volume a running container uses |
 
 Flags shared by every command but `clean` (which takes only `--images` and `--dry-run`):
@@ -114,6 +119,13 @@ And by `test` and `compare`:
 | `--image` | the `--kind` / `--arch` image | run another tag, such as `:candidate` |
 | `--known` | `known-failures.txt` | (`test` only) the standing failures |
 | `--fail-on-stale` | off | (`test` only) exit 1 when a standing failure passed, so the list is kept true |
+| `--pr` | off | test this pull request's head (`refs/pull/N/head`), fetched from `--remote`; also `shell` |
+| `--merge-main` | off | test the commit (the tree's, or the pull request's) merged with `--remote`'s main; also `shell` |
+| `--remote` | `origin` | where `--pr` and `--merge-main` fetch from |
+
+With `--pr` or `--merge-main` the run tests a commit, not the tree as it stands: the commit is checked out in a worktree of the tree's repository, in a scratch directory, and removed afterwards. Every file the commit tracks is there (a checkout that has deleted or not yet made a file, such as `uv.lock`, still tests with it), and uncommitted changes are not (a warning says when the tree has some). The fetches go to `refs/bngsim-docker/`, so the tree's own branches and `origin/*` do not move. A merge that conflicts stops the run and names the files.
+
+**Before you say a branch passes, test it merged with main** (`--merge-main`): two branches that each pass alone can fail together, as when each adds a case to a count a test pins. CI tests a pull request merged with main; this is the same run, locally.
 
 ### `test` and `compare`, side by side
 
@@ -244,6 +256,7 @@ BNGSIM_DOCKER_IMAGE=bngsim-linux-bionetgen:latest python -m pytest -q tests/test
 | File | Checks | Needs |
 |---|---|---|
 | `tests/test_cli.py` | the commands the CLI runs (pure functions and `--dry-run`), how it reads a pytest run, how `test` sorts failures and how `compare` decides, with the runs stood in for | nothing |
+| `tests/test_checkout.py` | `--pr` and `--merge-main` against real git repositories (a stand-in remote with a pull request's ref, and a clone): the merge, a conflict, the worktree removed even when the run fails, the tree's refs left alone; and `bng2`'s command | git |
 | `tests/test_images.py` | every version pinned exactly; BioNetGen's sha256; `BNGPATH` absolute; the Ubuntu image set up as CI; Compose naming the images and volumes the CLI uses | Docker Compose, for the Compose checks |
 | `tests/test_container.py` | inside a built image: the architecture, the pinned Python and uv, the toolchain, ccache, KLU, the script's refusal of a missing tree, and BNG2.pl, run_network and NFsim | a built image |
 
