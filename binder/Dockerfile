@@ -2,7 +2,7 @@
 # jupyter image (bngsim, BioNetGen, JupyterLab, the examples), set up as Binder
 # needs it. Nothing to install: a student clicks the link and gets JupyterLab.
 #
-#   https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb
+#   https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/tour.ipynb
 #
 # Binder runs the server itself, as an ordinary user with uid 1000 and through
 # jupyterhub-singleuser; the examples are copied into that user's home, so the

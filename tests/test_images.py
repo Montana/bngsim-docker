@@ -204,6 +204,16 @@ def test_the_binder_image_is_the_jupyter_one_set_up_as_binder_needs():
     assert 'cp -r /examples "/home/${NB_USER}/examples"' in binder
 
 
-def test_the_readme_s_binder_link_opens_the_tour():
+def test_the_readme_s_binder_link_opens_the_tour_on_the_binder_branch():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb" in readme
+    assert "https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/tour.ipynb" in readme
+
+
+def test_the_binder_branch_is_moved_only_by_the_jupyter_image_s_digest():
+    """The publish job pins the jupyter image by digest on the binder branch, and
+    leaves the branch where it is when that digest has not changed."""
+    publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    job = publish.split("\n  binder:\n", 1)[1]
+    assert 'pinned="FROM montanamendy/bngsim:jupyter@${digest}"' in job
+    assert "already serves" in job and "git push -q --force origin binder" in job
+    assert "contents: write" in job

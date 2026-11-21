@@ -105,8 +105,9 @@ jobs:
         env:
           STAMP: ${{ steps.stamp.outputs.stamp }}
         run: |
-          docker buildx imagetools create -t "${REPO}:debian" -t "${REPO}:latest" -t "${REPO}:debian-${STAMP}" \
-            "${REPO}:debian-amd64" "${REPO}:debian-arm64"
+          # test: the same image as debian and latest, named for what it is for (bngsim-test).
+          docker buildx imagetools create -t "${REPO}:debian" -t "${REPO}:latest" -t "${REPO}:test" \
+            -t "${REPO}:debian-${STAMP}" "${REPO}:debian-amd64" "${REPO}:debian-arm64"
           for kind in ubuntu bionetgen; do
             docker buildx imagetools create -t "${REPO}:${kind}" -t "${REPO}:${kind}-${STAMP}" "${REPO}:${kind}-amd64"
           done
@@ -124,7 +125,7 @@ jobs:
             print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
             sys.exit(1 if bad else 0)
         run: |
-          for tag in latest debian ubuntu bionetgen "debian-${STAMP}" "ubuntu-${STAMP}" "bionetgen-${STAMP}"; do
+          for tag in latest test debian ubuntu bionetgen "debian-${STAMP}" "ubuntu-${STAMP}" "bionetgen-${STAMP}"; do
             docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "${REPO}:${tag}"
           done
 
@@ -233,3 +234,40 @@ jobs:
           for ref in run "run-${VERSION}" jupyter "jupyter-${VERSION}"; do
             docker buildx imagetools inspect "montanamendy/bngsim-linux:${ref}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim-linux:${ref}"
           done
+
+  binder:
+    # The browser link (mybinder.org) points at the binder branch, not main: Binder
+    # rebuilds whenever the branch it serves moves, so a push to main would make
+    # the next launch wait minutes. The branch's binder/Dockerfile names the
+    # jupyter image by digest, and this job moves the branch only when that
+    # digest changes: launches stay fast, and Binder serves the very image that
+    # passed its checks.
+    name: point the browser link at the new jupyter image
+    needs: bngsim-tags
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - name: move the binder branch if the jupyter image changed
+        run: |
+          digest=$(docker buildx imagetools inspect montanamendy/bngsim:jupyter --format '{{json .Manifest}}' \
+            | python3 -c "import json, sys; print(json.load(sys.stdin)['digest'])")
+          case "$digest" in sha256:*) ;; *) echo "no digest for montanamendy/bngsim:jupyter: $digest"; exit 1 ;; esac
+          pinned="FROM montanamendy/bngsim:jupyter@${digest}"
+          if git fetch -q origin binder 2>/dev/null \
+              && git show FETCH_HEAD:binder/Dockerfile | grep -qxF "$pinned"; then
+            echo "the binder branch already serves ${digest}"
+            exit 0
+          fi
+          git checkout -q -B binder "origin/${GITHUB_REF_NAME}"
+          PINNED="$pinned" python3 -c "import os, re, pathlib; p = pathlib.Path('binder/Dockerfile'); p.write_text(re.sub(r'^FROM montanamendy/bngsim:jupyter\\S*$', os.environ['PINNED'], p.read_text(), flags=re.M))"
+          grep -qxF "$pinned" binder/Dockerfile
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -am "binder: serve montanamendy/bngsim:jupyter@${digest}"
+          git push -q --force origin binder
+          echo "the binder branch now serves ${digest}"
+

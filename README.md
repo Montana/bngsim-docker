@@ -6,7 +6,7 @@ Docker images and a small CLI for running [bngsim](https://github.com/lanl/bngsi
 
 **Just want to run bngsim?** [`montanamendy/bngsim`](https://hub.docker.com/r/montanamendy/bngsim) has it installed with BioNetGen, so a BNGL model loads with no Perl or BioNetGen to set up. See [Run bngsim](#run-bngsim). **Teaching with it?** See [For teachers](#for-teachers): students can open it in the browser with nothing installed.
 
-[![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb)
+[![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/tour.ipynb)
 
 A fix that depends on rounding can pass on Apple Silicon and fail on CI's x86-64 Linux. These images let a bngsim tree be built from source and tested on Linux, on a Mac or anywhere Docker runs, before its pull request is opened. The Debian image is the one [bngsim-preflights](https://github.com/Montana/bngsim-preflights)' `linux_check.py` runs (`bngsim-linux-amd64:latest`), written down so it can be rebuilt the same way.
 
@@ -64,9 +64,9 @@ Each image is checked before it is published: a BNGL model through BNG2.pl, an S
 
 **In the browser, nothing installed.** This link opens JupyterLab with bngsim, BioNetGen and the examples, on [mybinder.org](https://mybinder.org), a free public service:
 
-[![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/main?urlpath=lab/tree/examples/tour.ipynb)
+[![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/tour.ipynb)
 
-It opens on `examples/tour.ipynb`: a rule-based ligand-receptor model in BNGL, simulated as ODEs and stochastically, plotted, and checked against its exact answer; and an SBML model. Students can edit and run every cell. A Binder session is temporary (it ends after a while idle, and nothing is kept), and the first launch after an update can take a few minutes while Binder builds it. For coursework that must be kept, use Docker.
+It opens on `examples/tour.ipynb`: a rule-based ligand-receptor model in BNGL, simulated as ODEs and stochastically, plotted, and checked against its exact answer; and an SBML model. Students can edit and run every cell. The link serves the `binder` branch, which the publish job moves only when the Jupyter image changes, so a launch is quick and runs the image that passed its checks. A Binder session is temporary (it ends after a while idle, and nothing is kept), and the first launch after an update can take a few minutes while Binder builds it. For coursework that must be kept, use Docker.
 
 **With Docker, the same for every student:**
 
@@ -176,7 +176,7 @@ The images are published at [`montanamendy/bngsim-linux`](https://hub.docker.com
 
 | Tag | Image | Architectures |
 |---|---|---|
-| `debian`, `latest` | the Debian image | amd64, arm64 |
+| `debian`, `latest`, `test` | the Debian image (`test` names it for `bngsim-test`) | amd64, arm64 |
 | `ubuntu` | the Ubuntu image, set up as bngsim's CI | amd64 |
 | `bionetgen` | the Debian image with BioNetGen 2.9.3 | amd64 |
 
@@ -189,11 +189,11 @@ CI publishes them ([`publish.yml`](.github/workflows/publish.yml)): when the Doc
 Each test image carries `bngsim-test`: it fetches bngsim from GitHub (a pull request, a branch or tag, or main), builds it, and runs its tests. No clone of this repository, no checkout of bngsim:
 
 ```bash
-docker run --rm montanamendy/bngsim-linux bngsim-test --pr 1774                  # a pull request's head
-docker run --rm montanamendy/bngsim-linux bngsim-test --pr 1774 --merge-main     # merged with main, as CI tests it
-docker run --rm montanamendy/bngsim-linux bngsim-test --ref main python/tests/test_x.py
+docker run --rm montanamendy/bngsim-linux:test bngsim-test --pr 1774                  # a pull request's head
+docker run --rm montanamendy/bngsim-linux:test bngsim-test --pr 1774 --merge-main     # merged with main, as CI tests it
+docker run --rm montanamendy/bngsim-linux:test bngsim-test --ref main python/tests/test_x.py
 docker run --rm montanamendy/bngsim-linux:ubuntu bngsim-test --pr 1774           # in the image set up as CI
-docker run --rm -v ~/work/bngsim:/tree:ro montanamendy/bngsim-linux bngsim-test  # your own checkout
+docker run --rm -v ~/work/bngsim:/tree:ro montanamendy/bngsim-linux:test bngsim-test  # your own checkout
 ```
 
 The first build compiles bngsim (10 to 20 minutes on a laptop). A volume at `/ccache` keeps the compiles, so the next run takes about half a minute: add `-v bngsim-ccache:/ccache`. A merge that conflicts stops the run and names the files. `bngsim-test --help` lists the rest.
