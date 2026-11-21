@@ -4,9 +4,11 @@ checked by its sha256, and compose.yaml naming the images the CLI runs."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -256,3 +258,86 @@ def test_a_run_that_collects_nothing_says_so():
     assert script.index("-m pytest") < script.index("no tests ran: check the test paths")
     # Before the summary's grep, which finds nothing then and, under pipefail, ends the script.
     assert script.index("no tests ran: check the test paths") < script.index("grep -E '^FAILED|^ERROR")
+
+
+# ── the lessons, the image's user, attestations, scans, version tags ──────────
+
+LESSONS = ROOT / "images" / "examples" / "lessons"
+PUBLISH = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+
+
+def test_each_lesson_is_a_notebook_with_its_model_and_no_outputs():
+    notebooks = sorted(LESSONS.glob("*.ipynb"))
+    assert [n.name for n in notebooks] == ["1-equilibrium.ipynb", "2-ode-and-stochastic.ipynb",
+                                           "3-binding-and-dose-response.ipynb", "4-enzyme-kinetics.ipynb"]
+    for n in notebooks:
+        nb = json.loads(n.read_text(encoding="utf-8"))
+        code = "".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+        for model in re.findall(r'Model\.load\("([^"]+)"\)', code):
+            assert (LESSONS / model).is_file(), (n.name, model)  # relative: works in /examples and Binder's copy
+        assert all(not c.get("outputs") for c in nb["cells"] if c["cell_type"] == "code"), n.name
+
+
+def test_the_run_images_run_as_an_ordinary_user():
+    assert "useradd --uid 1000 --no-create-home --home-dir /home/bngsim" in RUN_IMAGE
+    bngsim_stage, jupyter_stage = RUN_IMAGE.split("FROM bngsim AS jupyter")
+    assert 'USER bngsim\nCMD ["python"]' in bngsim_stage
+    # The jupyter stage installs as root and hands back before its CMD.
+    assert jupyter_stage.index("USER root") < jupyter_stage.index("pip install") < jupyter_stage.rindex("USER bngsim")
+    assert jupyter_stage.rindex("USER bngsim") < jupyter_stage.index("CMD [")
+
+
+def test_binder_installs_as_root_and_serves_as_its_own_user():
+    binder = (ROOT / "binder" / "Dockerfile").read_text(encoding="utf-8")
+    assert binder.index("USER root") < binder.index("pip install") < binder.index("useradd")
+    # bngsim holds uid 1000 in the image; Binder's user must have it.
+    assert binder.index("userdel bngsim") < binder.index('useradd --create-home --uid "${NB_UID}"')
+    assert binder.rstrip().splitlines()[-1] == "USER ${NB_USER}"
+
+
+def _job(name):
+    """One job of publish.yml, from its key to the next job's."""
+    start = re.search(rf"^  {re.escape(name)}:\n", PUBLISH, re.M).end()
+    end = re.search(r"^  [a-z-]+:\n", PUBLISH[start:], re.M)
+    return PUBLISH[start:start + end.start()] if end else PUBLISH[start:]
+
+
+def test_every_published_build_carries_its_sbom_and_provenance():
+    # Attestations need the containerd image store under the docker driver.
+    assert PUBLISH.count("turn on Docker's containerd image store") == 2
+    assert PUBLISH.count("--attest") == 3  # the test images' loop, the bngsim and the jupyter builds
+    assert "'containerd-snapshotter'] = True" in PUBLISH
+    # And every tag is checked for both, per architecture, after it is made.
+    assert PUBLISH.count('python3 -c "$ATTEST"') == 2
+    assert "{{json .SBOM}}" in PUBLISH and "{{json .Provenance}}" in PUBLISH
+
+
+def test_every_image_is_scanned_before_it_is_pushed_and_the_scan_never_blocks():
+    for job in ("build", "bngsim-build"):
+        body = _job(job)
+        assert body.index("scan-image.sh") < body.index("name: push"), job
+    assert PUBLISH.count("continue-on-error: true") == 2
+    script = (ROOT / "scripts" / "scan-image.sh").read_text(encoding="utf-8")
+    assert re.search(r"^TRIVY=aquasec/trivy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$", script, re.M)
+    assert "--severity HIGH,CRITICAL --ignore-unfixed" in script
+
+
+def test_a_new_release_is_published_within_a_day_and_an_old_one_moves_no_shared_tag():
+    assert '- cron: "17 6 * * *"' in PUBLISH and "github.event.schedule != '17 6 * * *'" in PUBLISH
+    assert "if: needs.release.outputs.build == 'true'" in PUBLISH
+    assert 'if [ "$NEWEST_IN_SERIES" = true ]; then' in PUBLISH and 'if [ "$NEWEST" = true ]; then' in PUBLISH
+    assert "if: needs.release.outputs.newest == 'true'" in PUBLISH  # the binder branch
+    tag = PUBLISH[PUBLISH.index("# The release's own tags always"):]
+    assert tag.index('if [ "$NEWEST" = true ]') < tag.index("montanamendy/bngsim:latest")
+
+
+def test_the_release_is_picked_as_the_workflow_says(tmp_path):
+    """The release job's script, run on PyPI's answer as it is today."""
+    yaml = pytest.importorskip("yaml")
+    pick = yaml.safe_load(PUBLISH)["jobs"]["release"]["steps"][0]["env"]["PICK"]
+    out = tmp_path / "out"
+    r = subprocess.run([sys.executable, "-c", pick], capture_output=True, text=True, timeout=120,
+                       env={**os.environ, "ASKED": "9.9.9", "DAILY_RUN": "false", "GITHUB_OUTPUT": str(out)})
+    if "urlopen error" in r.stderr or "timed out" in r.stderr:
+        pytest.skip("no network")
+    assert r.returncode != 0 and "bngsim 9.9.9 is not on PyPI" in r.stderr

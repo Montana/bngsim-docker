@@ -1,0 +1,28 @@
+# An enzyme E turning substrate S into product P: E + S <-> ES -> E + P.
+begin model
+begin parameters
+  E0   1      # enzyme molecules (few, beside the substrate)
+  S0   500    # substrate molecules
+  k1   0.01   # E + S -> ES, per molecule pair per second
+  km1  0.4    # ES -> E + S, per second
+  k2   0.1    # ES -> E + P, per second (the catalytic rate, kcat)
+end parameters
+begin molecule types
+  E(s)
+  S(e)
+  P()
+end molecule types
+begin species
+  E(s) E0
+  S(e) S0
+end species
+begin observables
+  Molecules ES E(s!1).S(e!1)
+  Molecules S  S(e)
+  Molecules P  P()
+end observables
+begin reaction rules
+  E(s) + S(e) <-> E(s!1).S(e!1) k1, km1
+  E(s!1).S(e!1) -> E(s) + P() k2
+end reaction rules
+end model

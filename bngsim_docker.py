@@ -122,12 +122,14 @@ def ccache_volume(arch: str, kind: str) -> str:
 
 
 def build_commands(arch: str, kind: str, fresh: bool = False,
-                   bngsim_version: str | None = None) -> list[list[str]]:
+                   bngsim_version: str | None = None, attest: bool = False) -> list[list[str]]:
     """The docker builds for an image: BioNetGen's is built on the Debian one.
     `fresh` rebuilds every layer from a newly pulled base (Debian's or Ubuntu's
     security updates); BioNetGen's base is the local Debian image, built just
     before, so it is not pulled. `bngsim_version` picks the release the bngsim
-    image installs (default: the Dockerfile's)."""
+    image installs (default: the Dockerfile's). `attest` records an SBOM and the
+    build's provenance with the image (the publish job; Docker needs its
+    containerd image store for that)."""
     if bngsim_version and kind not in RUNNING:
         raise SystemExit("--bngsim-version is for --kind bngsim or bngsim-jupyter: the other images build a tree, "
                          "not a release")
@@ -136,6 +138,8 @@ def build_commands(arch: str, kind: str, fresh: bool = False,
 
     def build(k: str, *extra: str) -> list[str]:
         new = (["--no-cache"] if k == "bionetgen" else ["--pull", "--no-cache"]) if fresh else []
+        if attest:
+            new += ["--sbom=true", "--provenance=mode=max"]
         # The test images carry the repository's scripts (bngsim-test, container-test.sh),
         # and the Debian and bngsim images build antimony with one on arm64.
         scripts = ["--build-context", f"scripts={SCRIPTS}"] if k != "bionetgen" else []
@@ -900,6 +904,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="pull the base image again and build every layer anew (picks up security updates)")
     p.add_argument("--bngsim-version",
                    help="with --kind bngsim or bngsim-jupyter: the bngsim release to install (default: the Dockerfile's)")
+    p.add_argument("--attest", action="store_true",
+                   help="record an SBOM and the build's provenance with the image (needs Docker's containerd "
+                        "image store; the publish job turns it on)")
     for name, helptext in (("probe", "does a container start?"),
                            ("doctor", "probe; restart Docker Desktop if no container starts")):
         p = sub.add_parser(name, parents=[common], help=helptext)
@@ -951,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == "build":
-        for cmd in build_commands(a.arch, a.kind, a.fresh, a.bngsim_version):
+        for cmd in build_commands(a.arch, a.kind, a.fresh, a.bngsim_version, a.attest):
             if sh(cmd, dry=a.dry_run, capture=False).returncode != 0:
                 return 1
         return 0

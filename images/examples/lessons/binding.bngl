@@ -1,0 +1,24 @@
+# A ligand L binding a receptor R: L + R <-> LR, with Kd = koff/kon.
+begin model
+begin parameters
+  L0    100    # ligand molecules
+  R0    10     # receptor molecules
+  kon   0.001  # per molecule pair per second
+  koff  0.1    # per second (so Kd = 100 molecules)
+end parameters
+begin molecule types
+  L(r)
+  R(l)
+end molecule types
+begin species
+  L(r) L0
+  R(l) R0
+end species
+begin observables
+  Molecules Bound L(r!1).R(l!1)
+  Molecules FreeL L(r)
+end observables
+begin reaction rules
+  L(r) + R(l) <-> L(r!1).R(l!1) kon, koff
+end reaction rules
+end model

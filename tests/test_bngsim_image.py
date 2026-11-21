@@ -141,3 +141,50 @@ def test_jupyterlab_asks_for_its_token_and_opens_in_work(tmp_path):
         assert re.search(r'"preferredPath":\s*"work"', lab)
     finally:
         subprocess.run(["docker", "stop", cid], capture_output=True)
+
+
+def test_the_image_runs_as_its_own_user_not_root():
+    """With no --user, the image is bngsim (uid 1000); /work and $HOME are writable."""
+    r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", IMAGE, "bash", "-c",
+                        "id -un; id -u; touch /work/x $HOME/.cache/x && echo writable"],
+                       capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.split() == ["bngsim", "1000", "writable"], r.stdout
+
+
+@needs_jupyter
+def test_jupyter_runs_as_its_own_user_too():
+    r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", JUPYTER, "bash", "-c",
+                        "id -u; jupyter lab --version >/dev/null && echo lab"],
+                       capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0 and r.stdout.split() == ["1000", "lab"], r.stdout + r.stderr
+
+
+LESSONS = ["1-equilibrium.ipynb", "2-ode-and-stochastic.ipynb", "3-binding-and-dose-response.ipynb",
+           "4-enzyme-kinetics.ipynb"]
+
+
+@needs_jupyter
+@pytest.mark.parametrize("lesson", LESSONS)
+def test_each_lesson_runs_and_agrees_with_its_answers(lesson):
+    """Every cell runs, as a user other than root and the image's own; its plots are drawn; each
+    "exact X, simulated Y" printed agrees to the digits shown (the Michaelis-Menten law, an
+    approximation, to 0.1%)."""
+    script = (f"cd /examples/lessons && jupyter nbconvert --to notebook --execute "
+              f"--ExecutePreprocessor.startup_timeout=300 {lesson} --output /tmp/l.ipynb >/dev/null && "
+              "python -c \"import json; nb = json.load(open('/tmp/l.ipynb')); "
+              "outs = [o for c in nb['cells'] if c['cell_type'] == 'code' for o in c['outputs']]; "
+              "print('errors', sum(o['output_type'] == 'error' for o in outs)); "
+              "print('plots', sum('image/png' in o.get('data', {}) for o in outs)); "
+              "print(''.join(t for o in outs for t in o.get('text', [])))\"")
+    r = subprocess.run(["docker", "run", "--rm", "--platform", f"linux/{ARCH}", "--user", "1234:1234", JUPYTER,
+                        "bash", "-c", script], capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "errors 0" in r.stdout and "plots 2" in r.stdout, r.stdout
+    pairs = re.findall(r"exact ([\d.]+), simulated ([\d.]+)", r.stdout)
+    laws = re.findall(r"Michaelis-Menten ([\d.]+), simulated ([\d.]+)", r.stdout)
+    assert pairs or laws, r.stdout
+    for want, got in pairs:
+        assert want == got, (want, got)
+    for want, got in laws:
+        assert abs(float(got) - float(want)) <= 1e-3 * float(want), (want, got)

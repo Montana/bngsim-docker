@@ -84,8 +84,9 @@ RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
 LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker" \
       org.opencontainers.image.description="bngsim, the BioNetGen simulation engine from Los Alamos National Laboratory, ready to run: BNGL, SBML and Antimony models, ODE and stochastic simulation"
 
-# Any user can run the image (docker run --user "$(id -u):$(id -g)", so what a
-# script writes to a mounted folder is the caller's, not root's). bngsim keeps
+# The image runs as an ordinary user, bngsim (uid 1000), not root; any other
+# user can run it too (docker run --user "$(id -u):$(id -g)", so what a script
+# writes to a mounted folder is the caller's), and --user root still works. bngsim keeps
 # its compiled models and generated networks under $HOME/.cache: a home every
 # user can write to (sticky, like /tmp), or a compiled model fails with
 # "Permission denied: '/.cache'" for any user but root. /work too, for a run
@@ -93,10 +94,11 @@ LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker"
 # .cache itself is made here and writable too: a build of the amd64 image under
 # Rosetta (Docker Desktop on Apple Silicon) writes .cache/rosetta as root.
 ENV HOME=/home/bngsim
-RUN mkdir -p /home/bngsim/.cache /work && chmod 1777 /home/bngsim /home/bngsim/.cache /work
+RUN mkdir -p /home/bngsim/.cache /work && chmod 1777 /home/bngsim /home/bngsim/.cache /work \
+    && useradd --uid 1000 --no-create-home --home-dir /home/bngsim --shell /bin/bash bngsim
 
 # Examples to try first: python /examples/run.py (and, in the jupyter image,
-# /examples/tour.ipynb)
+# /examples/tour.ipynb, and four lessons for a class in /examples/lessons)
 COPY examples /examples
 
 # A copy of this file, which the CLI compares with the repository's to say when
@@ -106,6 +108,7 @@ COPY Dockerfile.bngsim /etc/bngsim-docker/Dockerfile.bngsim
 # hadolint ignore=DL3022
 COPY --from=scripts build-antimony.sh /etc/bngsim-docker/build-antimony.sh
 WORKDIR /work
+USER bngsim
 CMD ["python"]
 
 # ── jupyter: the same, with JupyterLab and matplotlib, for notebooks ─────────
@@ -115,13 +118,17 @@ CMD ["python"]
 FROM bngsim AS jupyter
 ARG JUPYTERLAB_VERSION=4.6.6
 ARG MATPLOTLIB_VERSION=3.11.2
+# Installed as root, then back to the image's user.
+# hadolint ignore=DL3002
+USER root
 RUN pip install --no-cache-dir "jupyterlab==${JUPYTERLAB_VERSION}" "matplotlib==${MATPLOTLIB_VERSION}"
 EXPOSE 8888
-# --allow-root: the image runs as root unless given --user; --ip: reachable
-# through the published port, not only from inside the container.
+# --allow-root: for docker run --user root (the image's own user is bngsim);
+# --ip: reachable through the published port, not only from inside the container.
 # The file browser starts in /work (the mounted folder) with / as its root, so
 # /examples, and its tour.ipynb, are one level up; the examples are writable by
 # any user, so a notebook opened there can be saved.
 RUN chmod -R a+w /examples
+USER bngsim
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", \
      "--ServerApp.root_dir=/", "--FileContentsManager.preferred_dir=/work"]

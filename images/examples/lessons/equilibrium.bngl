@@ -1,0 +1,25 @@
+# A + B <-> C, by mass action: the forward rate is kf*A*B, the reverse kr*C.
+begin model
+begin parameters
+  A0  100    # molecules of A at the start
+  B0  50     # molecules of B at the start
+  kf  0.001  # binding, per molecule pair per second
+  kr  0.01   # unbinding, per second
+end parameters
+begin molecule types
+  A(b)
+  B(a)
+end molecule types
+begin species
+  A(b) A0
+  B(a) B0
+end species
+begin observables
+  Molecules A A(b)
+  Molecules B B(a)
+  Molecules C A(b!1).B(a!1)
+end observables
+begin reaction rules
+  A(b) + B(a) <-> A(b!1).B(a!1) kf, kr
+end reaction rules
+end model

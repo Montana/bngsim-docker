@@ -40,13 +40,25 @@ result = bngsim.Simulator(model, method="ode").run(t_span=(0, 10), n_points=101)
 print(result.observables["Atot"])
 ```
 
-On Linux, add `--user "$(id -u):$(id -g)"` so the files a run writes into your folder are yours, not root's. The image runs as any user: bngsim's compiled models and generated networks are cached in a home folder every user can write to.
+The image runs as an ordinary user, `bngsim` (uid 1000), not as root. On Linux, add `--user "$(id -u):$(id -g)"` so the files a run writes into your folder are yours, and so it can write to a folder uid 1000 cannot; Docker Desktop (macOS, Windows) needs nothing. Any user works: bngsim's compiled models and generated networks are cached in a home folder every user can write to, and `--user root` is still there when you need it.
 
 | Tag | |
 |---|---|
-| `latest`, `0.17.2`, ... | a bngsim release, amd64 and arm64 |
-| `jupyter`, `0.17.2-jupyter`, ... | the same, with JupyterLab and matplotlib |
+| `latest`, `jupyter` | the newest bngsim release; the second with JupyterLab and matplotlib |
+| `0.17`, `0.17-jupyter` | the newest release in the 0.17 series (patch releases arrive; 0.18 does not) |
+| `0.17.2`, `0.17.2-jupyter` | one release, for good: pin this for a course or a paper |
 | `0.17.2-amd64`, `0.17.2-jupyter-arm64`, ... | one architecture |
+
+A new bngsim release on PyPI is published within a day (the publish job checks daily), and every image is rebuilt weekly from a freshly pulled base, for Debian's security fixes.
+
+**What is inside, and how it was built.** Every image carries an SBOM (the list of every package in it, Debian's and Python's) and its build provenance (the commit and workflow that built it), attached when it is published; Docker Hub shows them, and so does
+
+```bash
+docker buildx imagetools inspect montanamendy/bngsim:latest --format '{{json .SBOM}}'
+docker buildx imagetools inspect montanamendy/bngsim:latest --format '{{json .Provenance}}'
+```
+
+Each image is also scanned for known vulnerabilities ([Trivy](https://trivy.dev), high and critical with a fix available, [`scripts/scan-image.sh`](scripts/scan-image.sh)) before it is pushed; the report is in the summary of each [publish run](https://github.com/Montana/bngsim-docker/actions/workflows/publish.yml). It is a report, not a gate: the weekly rebuild is what takes the fixes in.
 
 ### In a notebook
 
@@ -58,7 +70,7 @@ then open the `http://127.0.0.1:8888/lab?token=...` address it prints. JupyterLa
 
 On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Linux: the image builds both from source ([`scripts/build-antimony.sh`](scripts/build-antimony.sh) for antimony, as antimony's own CI builds it), so the image is the same on either architecture, Antimony models included.
 
-Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed; a user other than root compiles a model, and the examples agree with their exact answers ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
+Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed; the image's own user, and another, compile a model; the examples, the tour and the four lessons agree with their answers ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
 
 ## For teachers
 
@@ -67,6 +79,15 @@ Each image is checked before it is published: a BNGL model through BNG2.pl, an S
 [![Launch in the browser](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/tour.ipynb)
 
 It opens on `examples/tour.ipynb`: a rule-based ligand-receptor model in BNGL, simulated as ODEs and stochastically, plotted, and checked against its exact answer; and an SBML model. Students can edit and run every cell. The link serves the `binder` branch, which the publish job moves only when the Jupyter image changes, so a launch is quick and runs the image that passed its checks. A Binder session is temporary (it ends after a while idle, and nothing is kept), and the first launch after an update can take a few minutes while Binder builds it. For coursework that must be kept, use Docker.
+
+**Four lessons**, each about one class period, in `examples/lessons`. Each has a short BNGL model beside it, plots, a check against the exact answer (or a classic law), and a "Try it" section of questions to change and rerun:
+
+| Lesson | Students | Open it in the browser |
+|---|---|---|
+| 1. Mass action and equilibrium | watch `A + B <-> C` settle, see the forward and reverse rates meet, solve for the equilibrium and check `K = kf/kr` | [launch](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/lessons/1-equilibrium.ipynb) |
+| 2. Deterministic and stochastic | run a 20-molecule decay as an ODE and as single random histories, and find the ODE as the mean of 500 | [launch](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/lessons/2-ode-and-stochastic.ipynb) |
+| 3. Binding and dose response | scan a ligand over five orders of magnitude, read `Kd` off the curve, and see when `L/(L + Kd)` stops holding | [launch](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/lessons/3-binding-and-dose-response.ipynb) |
+| 4. Enzyme kinetics | measure an enzyme's rate at nine substrate amounts and recover Michaelis–Menten, `Km` and `Vmax`, from the elementary reactions | [launch](https://mybinder.org/v2/gh/Montana/bngsim-docker/binder?urlpath=lab/tree/examples/lessons/4-enzyme-kinetics.ipynb) |
 
 **With Docker, the same for every student:**
 
@@ -182,7 +203,7 @@ The images are published at [`montanamendy/bngsim-linux`](https://hub.docker.com
 
 Each is also tagged per architecture (`debian-amd64`, `debian-arm64`, `ubuntu-amd64`, `bionetgen-amd64`), and with the day and commit it was built from (`debian-20261127-18dcf7e`): a fixed tag, to rerun a result on the very image it came from after `latest` has moved on.
 
-CI publishes them ([`publish.yml`](.github/workflows/publish.yml)): when the Dockerfiles change on main, weekly from a newly pulled base (`build --fresh`, so the distributions' security updates are in), and on demand. Each image is built on a native runner of its architecture and checked inside before it is pushed, and every tag is checked to name this repository as its source.
+CI publishes them ([`publish.yml`](.github/workflows/publish.yml)): when the Dockerfiles change on main, weekly from a newly pulled base (`build --fresh`, so the distributions' security updates are in), and on demand. Each image is built on a native runner of its architecture, with an SBOM and its provenance, checked inside and scanned before it is pushed, and every tag is checked to name this repository as its source and to carry both attestations.
 
 ### In one command, with nothing else installed
 
@@ -379,6 +400,9 @@ In an image it does not name, its failure is the tree's. `test` also says when a
 |---|---|
 | [`bngsim_docker.py`](bngsim_docker.py) | the CLI (standard library only) |
 | [`scripts/container-test.sh`](scripts/container-test.sh) | what runs in the container: copy, build, test; shared by the CLI and Compose |
+| [`scripts/build-antimony.sh`](scripts/build-antimony.sh) | builds antimony from source for arm64, where PyPI has no wheel; the Debian and bngsim images run it |
+| [`scripts/scan-image.sh`](scripts/scan-image.sh) | scans an image with Trivy and writes the report the publish job shows |
+| [`images/examples/lessons`](images/examples/lessons) | four lessons for a class, each a notebook and its BNGL model |
 | [`images/`](images) | the three Dockerfiles |
 | [`compose.yaml`](compose.yaml) | build and run services, and the named cache volumes |
 | [`known-failures.txt`](known-failures.txt) | the standing failures, each with its reason |
@@ -408,7 +432,7 @@ BNGSIM_DOCKER_IMAGE=bngsim-linux-bionetgen:latest python -m pytest -q tests/test
 | build the images, check inside them | ubuntu-latest | builds the Debian, Ubuntu and BioNetGen images and runs `test_container.py` in each |
 | bngsim main, the whole suite (weekly) | ubuntu-latest | weekly and on demand: all of bngsim's suite on main in the Debian image, on native x86-64, with `--fail-on-stale`, so a new failure or a standing one that passed fails the job |
 | the arm64 image | ubuntu-24.04-arm | builds the arm64 image and checks inside it |
-| publish (`publish.yml`) | ubuntu-latest, ubuntu-24.04-arm | on a Dockerfile change on main, weekly (`--fresh`) and on demand: builds, checks inside, pushes to Docker Hub, makes the multi-architecture and fixed tags |
+| publish (`publish.yml`) | ubuntu-latest, ubuntu-24.04-arm | on a Dockerfile change on main, weekly (`--fresh`), daily for a new bngsim release, and on demand (a release named in `bngsim_version` too): builds with an SBOM and provenance (`--attest`), checks inside, scans, pushes to Docker Hub, makes the multi-architecture, series and fixed tags, and checks every tag's source label and attestations |
 | bngsim main, built and tested in the image | ubuntu-latest | builds bngsim's main through the CLI and runs a few of its test files; also weekly, as main moves |
 
 ## Requirements

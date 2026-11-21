@@ -3,6 +3,9 @@ name: publish
 # Builds the images and pushes them to Docker Hub: the test images to
 # montanamendy/bngsim-linux, and bngsim installed, to run it, to montanamendy/bngsim
 # (tagged by bngsim release, the newest on PyPI, and latest; amd64 and arm64).
+# Every image carries an SBOM and the build's provenance (attestations, which
+# Docker Hub shows), and is scanned for known vulnerabilities before it is
+# pushed (the run's summary has the report).
 # The test images:
 # when the Dockerfiles change on main, weekly from a freshly pulled base (the
 # distributions' security updates), and on demand. Each image is checked
@@ -15,8 +18,14 @@ on:
     branches: [main]
     paths: ["images/**", ".github/workflows/publish.yml"]
   schedule:
-    - cron: "41 5 * * 1"  # weekly, before ci.yml's run
+    - cron: "41 5 * * 1"  # weekly, before ci.yml's run: everything, from fresh bases
+    - cron: "17 6 * * *"  # daily: a new bngsim release on PyPI, if not yet published
   workflow_dispatch:
+    inputs:
+      bngsim_version:
+        description: "a bngsim release to build (default: the newest on PyPI); an older one leaves latest alone"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,8 +41,12 @@ env:
 jobs:
   build:
     name: build, check and push (${{ matrix.arch }})
-    # Forks have no token and are not the publisher.
-    if: github.repository == 'Montana/bngsim-docker'
+    # Forks have no token and are not the publisher. The daily check, and a run
+    # for one bngsim release, leave the test images alone.
+    if: >-
+      github.repository == 'Montana/bngsim-docker'
+      && github.event.schedule != '17 6 * * *'
+      && (github.event_name != 'workflow_dispatch' || inputs.bngsim_version == '')
     strategy:
       fail-fast: true
       matrix:
@@ -51,11 +64,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install pytest==8.3.5
+      - name: turn on Docker's containerd image store (attestations need it)
+        run: |
+          sudo python3 -c "import json, pathlib; p = pathlib.Path('/etc/docker/daemon.json'); \
+          d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}; \
+          d.setdefault('features', {})['containerd-snapshotter'] = True; p.write_text(json.dumps(d))"
+          sudo systemctl restart docker
+          docker info -f '{{json .DriverStatus}}' | grep -q containerd
       - name: build
         env:
           FRESH: ${{ github.event_name == 'schedule' }}
         run: |
-          extra=()
+          extra=(--attest)
           if [ "$FRESH" = true ]; then extra+=(--fresh); fi
           for kind in ${{ matrix.kinds }}; do
             python bngsim_docker.py build --arch ${{ matrix.arch }} --kind "$kind" "${extra[@]}"
@@ -70,6 +90,17 @@ jobs:
           for image in $images; do
             echo "== $image"
             BNGSIM_DOCKER_IMAGE="$image" BNGSIM_DOCKER_ARCH=${{ matrix.arch }} python -m pytest -q -rs tests/test_container.py
+          done
+      - name: scan for known vulnerabilities (a report, in the run's summary)
+        continue-on-error: true
+        run: |
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            images="bngsim-linux-amd64:latest bngsim-linux-ubuntu:latest bngsim-linux-bionetgen:latest"
+          else
+            images="bngsim-linux-arm64:latest"
+          fi
+          for image in $images; do
+            bash scripts/scan-image.sh "$image" "linux/${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
           done
       - uses: docker/login-action@v3
         with:
@@ -111,7 +142,7 @@ jobs:
           for kind in ubuntu bionetgen; do
             docker buildx imagetools create -t "${REPO}:${kind}" -t "${REPO}:${kind}-${STAMP}" "${REPO}:${kind}-amd64"
           done
-      - name: every tag names this repository as its source
+      - name: every tag names this repository as its source, and carries its SBOM and provenance
         env:
           STAMP: ${{ steps.stamp.outputs.stamp }}
           # One image, or one per platform (a multi-architecture tag): each must name its source.
@@ -124,9 +155,23 @@ jobs:
                    != "https://github.com/Montana/bngsim-docker"]
             print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
             sys.exit(1 if bad else 0)
+          # An SBOM and provenance for each architecture of each tag.
+          ATTEST: |
+            import json, sys
+            ref, want = sys.argv[1], int(sys.argv[2])
+            sbom, prov = (json.loads(s) for s in sys.stdin.read().split("\n---\n"))
+            per = lambda d: [d] if any(k in d for k in ("SPDX", "SLSA")) else list(d.values())
+            n_sbom = sum(bool(x.get("SPDX")) for x in per(sbom or {}))
+            n_prov = sum(bool(x.get("SLSA")) for x in per(prov or {}))
+            print(ref, f"SBOM {n_sbom}/{want}, provenance {n_prov}/{want}")
+            sys.exit(0 if n_sbom == want and n_prov == want else 1)
         run: |
           for tag in latest test debian ubuntu bionetgen "debian-${STAMP}" "ubuntu-${STAMP}" "bionetgen-${STAMP}"; do
             docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "${REPO}:${tag}"
+            case "$tag" in latest|test|debian*) n=2 ;; *) n=1 ;; esac
+            { docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .SBOM}}'; echo "---"
+              docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Provenance}}'; } \
+              | python3 -c "$ATTEST" "${REPO}:${tag}" "$n"
           done
 
   # ── montanamendy/bngsim: bngsim installed, to run it ──────────────────────
@@ -136,16 +181,48 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.pypi.outputs.version }}
+      series: ${{ steps.pypi.outputs.series }}
+      newest: ${{ steps.pypi.outputs.newest }}
+      newest_in_series: ${{ steps.pypi.outputs.newest_in_series }}
+      build: ${{ steps.pypi.outputs.build }}
     steps:
+      # Which release, and which of its tags move: latest and jupyter follow the
+      # newest release, and the series tag (0.17) the newest in its series, so a
+      # release built again by name never moves either back. The daily check
+      # builds only a release Docker Hub does not have yet.
       - id: pypi
-        run: |
-          version=$(curl -fsSL https://pypi.org/pypi/bngsim/json | python3 -c "import json, sys; print(json.load(sys.stdin)['info']['version'])")
-          echo "bngsim $version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        env:
+          ASKED: ${{ inputs.bngsim_version }}
+          DAILY_RUN: ${{ github.event.schedule == '17 6 * * *' }}
+          PICK: |
+            import json, os, re, sys, urllib.request
+            pypi = json.load(urllib.request.urlopen("https://pypi.org/pypi/bngsim/json", timeout=60))
+            newest = pypi["info"]["version"]
+            version = os.environ.get("ASKED") or newest
+            final = [v for v in pypi["releases"] if re.fullmatch(r"\d+\.\d+\.\d+", v) and pypi["releases"][v]]
+            if version not in pypi["releases"] or not pypi["releases"][version]:
+                sys.exit(f"bngsim {version} is not on PyPI")
+            series = ".".join(version.split(".")[:2])
+            key = lambda v: tuple(int(x) for x in v.split("."))
+            in_series = [v for v in final if v.startswith(series + ".")]
+            newest_in_series = bool(in_series) and version == max(in_series, key=key)
+            try:
+                urllib.request.urlopen(f"https://hub.docker.com/v2/repositories/montanamendy/bngsim/tags/{version}", timeout=60)
+                published = True
+            except Exception:
+                published = False
+            build = not (os.environ.get("DAILY_RUN") == "true" and published)
+            out = dict(version=version, series=series, newest=str(version == newest).lower(),
+                       newest_in_series=str(newest_in_series).lower(), build=str(build).lower())
+            print(f"bngsim {version}: newest on PyPI {newest}, on Docker Hub already {published}; {out}")
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                f.writelines(f"{k}={v}\n" for k, v in out.items())
+        run: python3 -c "$PICK"
 
   bngsim-build:
     name: bngsim and jupyter images, build, check and push (${{ matrix.arch }})
     needs: release
+    if: needs.release.outputs.build == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -167,20 +244,33 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install pytest==8.3.5
+      - name: turn on Docker's containerd image store (attestations need it)
+        run: |
+          sudo python3 -c "import json, pathlib; p = pathlib.Path('/etc/docker/daemon.json'); \
+          d = json.loads(p.read_text()) if p.exists() and p.read_text().strip() else {}; \
+          d.setdefault('features', {})['containerd-snapshotter'] = True; p.write_text(json.dumps(d))"
+          sudo systemctl restart docker
+          docker info -f '{{json .DriverStatus}}' | grep -q containerd
       - name: build
         env:
           FRESH: ${{ github.event_name == 'schedule' }}
         run: |
           extra=()
           if [ "$FRESH" = true ]; then extra+=(--fresh); fi
-          python bngsim_docker.py build --kind bngsim --arch ${{ matrix.arch }} --bngsim-version "$VERSION" "${extra[@]}"
-          python bngsim_docker.py build --kind bngsim-jupyter --arch ${{ matrix.arch }} --bngsim-version "$VERSION"
+          python bngsim_docker.py build --kind bngsim --arch ${{ matrix.arch }} --bngsim-version "$VERSION" --attest "${extra[@]}"
+          python bngsim_docker.py build --kind bngsim-jupyter --arch ${{ matrix.arch }} --bngsim-version "$VERSION" --attest
       - name: check inside against exact answers (BNGL, SSA, SBML, Antimony, the tour notebook)
         env:
           BNGSIM_RUN_IMAGE: ${{ matrix.image }}
           BNGSIM_JUPYTER_IMAGE: ${{ matrix.jupyter }}
           BNGSIM_DOCKER_ARCH: ${{ matrix.arch }}
         run: python -m pytest -q -rs tests/test_bngsim_image.py
+      - name: scan for known vulnerabilities (a report, in the run's summary)
+        continue-on-error: true
+        run: |
+          for image in "${{ matrix.image }}" "${{ matrix.jupyter }}"; do
+            bash scripts/scan-image.sh "$image" "linux/${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
+          done
       - uses: docker/login-action@v3
         with:
           username: ${{ env.HUB_USER }}
@@ -198,6 +288,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.release.outputs.version }}
+      SERIES: ${{ needs.release.outputs.series }}
+      NEWEST: ${{ needs.release.outputs.newest }}
+      NEWEST_IN_SERIES: ${{ needs.release.outputs.newest_in_series }}
     steps:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -206,17 +299,25 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: tag
         run: |
-          docker buildx imagetools create -t "montanamendy/bngsim:${VERSION}" -t montanamendy/bngsim:latest \
+          # The release's own tags always; the series tag (0.17) for the newest in
+          # its series; latest and jupyter for the newest release.
+          run=("montanamendy/bngsim:${VERSION}" "montanamendy/bngsim-linux:run-${VERSION}")
+          jup=("montanamendy/bngsim:${VERSION}-jupyter" "montanamendy/bngsim-linux:jupyter-${VERSION}")
+          if [ "$NEWEST_IN_SERIES" = true ]; then
+            run+=("montanamendy/bngsim:${SERIES}"); jup+=("montanamendy/bngsim:${SERIES}-jupyter")
+          fi
+          if [ "$NEWEST" = true ]; then
+            # The same images under bngsim-linux too, so its page serves everyone: run
+            # (bngsim ready) and jupyter (for teaching), beside the test images.
+            run+=(montanamendy/bngsim:latest montanamendy/bngsim-linux:run)
+            jup+=(montanamendy/bngsim:jupyter montanamendy/bngsim-linux:jupyter)
+          fi
+          printf '%s\n' "${run[@]}" "${jup[@]}" > tags.txt
+          docker buildx imagetools create "${run[@]/#/-t}" \
             "montanamendy/bngsim:${VERSION}-amd64" "montanamendy/bngsim:${VERSION}-arm64"
-          docker buildx imagetools create -t "montanamendy/bngsim:${VERSION}-jupyter" -t montanamendy/bngsim:jupyter \
+          docker buildx imagetools create "${jup[@]/#/-t}" \
             "montanamendy/bngsim:${VERSION}-jupyter-amd64" "montanamendy/bngsim:${VERSION}-jupyter-arm64"
-          # The same images under bngsim-linux too, so its page serves everyone: run
-          # (bngsim ready) and jupyter (for teaching), beside the test images.
-          docker buildx imagetools create -t montanamendy/bngsim-linux:run -t "montanamendy/bngsim-linux:run-${VERSION}" \
-            "montanamendy/bngsim:${VERSION}-amd64" "montanamendy/bngsim:${VERSION}-arm64"
-          docker buildx imagetools create -t montanamendy/bngsim-linux:jupyter -t "montanamendy/bngsim-linux:jupyter-${VERSION}" \
-            "montanamendy/bngsim:${VERSION}-jupyter-amd64" "montanamendy/bngsim:${VERSION}-jupyter-arm64"
-      - name: both architectures name this repository as their source
+      - name: both architectures name this repository as their source, and carry their SBOM and provenance
         env:
           CHECK: |
             import json, sys
@@ -227,13 +328,23 @@ jobs:
                    != "https://github.com/Montana/bngsim-docker"]
             print(sys.argv[1], f"has no source label on {bad}" if bad else f"ok: {len(images)} image(s) name their source")
             sys.exit(1 if bad or len(images) != 2 else 0)
+          # An SBOM and provenance for each architecture of each tag.
+          ATTEST: |
+            import json, sys
+            ref, want = sys.argv[1], int(sys.argv[2])
+            sbom, prov = (json.loads(s) for s in sys.stdin.read().split("\n---\n"))
+            per = lambda d: [d] if any(k in d for k in ("SPDX", "SLSA")) else list(d.values())
+            n_sbom = sum(bool(x.get("SPDX")) for x in per(sbom or {}))
+            n_prov = sum(bool(x.get("SLSA")) for x in per(prov or {}))
+            print(ref, f"SBOM {n_sbom}/{want}, provenance {n_prov}/{want}")
+            sys.exit(0 if n_sbom == want and n_prov == want else 1)
         run: |
-          for ref in latest "${VERSION}" jupyter "${VERSION}-jupyter"; do
-            docker buildx imagetools inspect "montanamendy/bngsim:${ref}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim:${ref}"
-          done
-          for ref in run "run-${VERSION}" jupyter "jupyter-${VERSION}"; do
-            docker buildx imagetools inspect "montanamendy/bngsim-linux:${ref}" --format '{{json .Image}}' | python3 -c "$CHECK" "montanamendy/bngsim-linux:${ref}"
-          done
+          while read -r ref; do
+            docker buildx imagetools inspect "$ref" --format '{{json .Image}}' | python3 -c "$CHECK" "$ref"
+            { docker buildx imagetools inspect "$ref" --format '{{json .SBOM}}'; echo "---"
+              docker buildx imagetools inspect "$ref" --format '{{json .Provenance}}'; } \
+              | python3 -c "$ATTEST" "$ref" 2
+          done < tags.txt
 
   binder:
     # The browser link (mybinder.org) points at the binder branch, not main: Binder
@@ -243,7 +354,8 @@ jobs:
     # digest changes: launches stay fast, and Binder serves the very image that
     # passed its checks.
     name: point the browser link at the new jupyter image
-    needs: bngsim-tags
+    needs: [release, bngsim-tags]
+    if: needs.release.outputs.newest == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

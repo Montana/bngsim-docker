@@ -1,0 +1,19 @@
+# X -> nothing, each molecule independently at rate k: X(t) = X0 exp(-k t) on average.
+begin model
+begin parameters
+  X0  20    # molecules at the start
+  k   0.1   # per second
+end parameters
+begin molecule types
+  X()
+end molecule types
+begin species
+  X() X0
+end species
+begin observables
+  Molecules X X()
+end observables
+begin reaction rules
+  X() -> 0 k
+end reaction rules
+end model

@@ -617,3 +617,11 @@ def test_a_change_to_build_antimony_makes_the_debian_and_bngsim_images_stale(mon
     assert len(warnings) == 1 and "older scripts/build-antimony.sh" in warnings[0]
     # Ubuntu's image is amd64 only, and carries no copy.
     assert _stale(monkeypatch, "ubuntu", f"{_digest('Dockerfile.ubuntu')}  Dockerfile.ubuntu\n" + old)[0] == []
+
+
+def test_attest_records_an_sbom_and_provenance_on_every_build():
+    for kind in ("debian", "bionetgen", "bngsim"):
+        for cmd in bd.build_commands("amd64", kind, attest=True):
+            assert "--sbom=true" in cmd and "--provenance=mode=max" in cmd, (kind, cmd)
+    (plain,) = bd.build_commands("amd64", "bngsim")
+    assert "--sbom=true" not in plain
