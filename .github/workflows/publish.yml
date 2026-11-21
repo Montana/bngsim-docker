@@ -159,7 +159,7 @@ jobs:
           ATTEST: |
             import json, sys
             ref, want = sys.argv[1], int(sys.argv[2])
-            sbom, prov = (json.loads(s) for s in sys.stdin.read().split("\n---\n"))
+            sbom, prov = (json.load(open(f, encoding="utf-8")) for f in sys.argv[3:5])
             per = lambda d: [d] if any(k in d for k in ("SPDX", "SLSA")) else list(d.values())
             n_sbom = sum(bool(x.get("SPDX")) for x in per(sbom or {}))
             n_prov = sum(bool(x.get("SLSA")) for x in per(prov or {}))
@@ -169,9 +169,10 @@ jobs:
           for tag in latest test debian ubuntu bionetgen "debian-${STAMP}" "ubuntu-${STAMP}" "bionetgen-${STAMP}"; do
             docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Image}}' | python3 -c "$CHECK" "${REPO}:${tag}"
             case "$tag" in latest|test|debian*) n=2 ;; *) n=1 ;; esac
-            { docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .SBOM}}'; echo "---"
-              docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Provenance}}'; } \
-              | python3 -c "$ATTEST" "${REPO}:${tag}" "$n"
+            # Each to its own file: the output has no newline at its end, and an SBOM is megabytes.
+            docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .SBOM}}' > sbom.json
+            docker buildx imagetools inspect "${REPO}:${tag}" --format '{{json .Provenance}}' > provenance.json
+            python3 -c "$ATTEST" "${REPO}:${tag}" "$n" sbom.json provenance.json
           done
 
   # ── montanamendy/bngsim: bngsim installed, to run it ──────────────────────
@@ -332,7 +333,7 @@ jobs:
           ATTEST: |
             import json, sys
             ref, want = sys.argv[1], int(sys.argv[2])
-            sbom, prov = (json.loads(s) for s in sys.stdin.read().split("\n---\n"))
+            sbom, prov = (json.load(open(f, encoding="utf-8")) for f in sys.argv[3:5])
             per = lambda d: [d] if any(k in d for k in ("SPDX", "SLSA")) else list(d.values())
             n_sbom = sum(bool(x.get("SPDX")) for x in per(sbom or {}))
             n_prov = sum(bool(x.get("SLSA")) for x in per(prov or {}))
@@ -341,9 +342,10 @@ jobs:
         run: |
           while read -r ref; do
             docker buildx imagetools inspect "$ref" --format '{{json .Image}}' | python3 -c "$CHECK" "$ref"
-            { docker buildx imagetools inspect "$ref" --format '{{json .SBOM}}'; echo "---"
-              docker buildx imagetools inspect "$ref" --format '{{json .Provenance}}'; } \
-              | python3 -c "$ATTEST" "$ref" 2
+            # Each to its own file: the output has no newline at its end, and an SBOM is megabytes.
+            docker buildx imagetools inspect "$ref" --format '{{json .SBOM}}' > sbom.json
+            docker buildx imagetools inspect "$ref" --format '{{json .Provenance}}' > provenance.json
+            python3 -c "$ATTEST" "$ref" 2 sbom.json provenance.json
           done < tags.txt
 
   binder:

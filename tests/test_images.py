@@ -310,6 +310,10 @@ def test_every_published_build_carries_its_sbom_and_provenance():
     # And every tag is checked for both, per architecture, after it is made.
     assert PUBLISH.count('python3 -c "$ATTEST"') == 2
     assert "{{json .SBOM}}" in PUBLISH and "{{json .Provenance}}" in PUBLISH
+    # Each read from its own file: imagetools ends its output with no newline, so two piped
+    # through one stream ran together (the first publish run's check failed on it).
+    assert PUBLISH.count("--format '{{json .SBOM}}' > sbom.json") == 2
+    assert "sys.stdin.read().split" not in PUBLISH
 
 
 def test_every_image_is_scanned_before_it_is_pushed_and_the_scan_never_blocks():
