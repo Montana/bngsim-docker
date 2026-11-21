@@ -70,16 +70,32 @@ if [ ! -e .git ] && command -v git >/dev/null; then
     fi
 fi
 [ "$#" -gt 0 ] || set -- python/tests
-# antimony ships no Linux aarch64 wheel, so on arm64 bngsim installs without it.
-# The tests that need it skip or fail there (161 of bngsim's test files mention
-# it); the amd64 images run the whole suite.
+# antimony ships no Linux aarch64 wheel, so on arm64 uv sync leaves it out, and
+# the wheel the image built from source (/opt/antimony) is installed after it.
+# An image without one (built before it did) runs without antimony: the tests
+# that need it skip or fail there (161 of bngsim's test files mention it).
 SKIP=()
 if [ "$(uname -m)" = aarch64 ]; then
     SKIP=(--no-install-package antimony)
-    echo "arm64: installing without antimony (no Linux aarch64 wheel); the tests that need it skip or fail here" \
-        | tee -a /out/build.log
 fi
 uv sync --frozen --extra "$EXTRA" "${SKIP[@]}" >> /out/build.log 2>&1 || { tail -50 /out/build.log; exit 1; }
+if [ "$(uname -m)" = aarch64 ]; then
+    wheels=(/opt/antimony/antimony-*.whl)
+    wheel=""
+    if [ -f "${wheels[0]}" ]; then wheel="${wheels[0]}"; fi
+    locked=$(sed -n '/^name = "antimony"$/{n;s/^version = "\(.*\)"$/\1/p;}' uv.lock 2>/dev/null | head -1)
+    if [ -n "$wheel" ]; then
+        built=$(basename "$wheel" | cut -d- -f2)
+        uv pip install --python .venv/bin/python --no-deps "$wheel" >> /out/build.log 2>&1 \
+            || { tail -50 /out/build.log; exit 1; }
+        note="arm64: antimony $built, built from source in the image (PyPI has no Linux aarch64 wheel)"
+        if [ -n "$locked" ] && [ "$locked" != "$built" ]; then note="$note; uv.lock pins $locked"; fi
+        echo "$note" | tee -a /out/build.log
+    else
+        echo "arm64: installing without antimony (no Linux aarch64 wheel, and this image predates its source build; rebuild it); the tests that need it skip or fail here" \
+            | tee -a /out/build.log
+    fi
+fi
 if [ -n "${CCACHE_DIR:-}" ]; then
     ccache --print-stats | awk -F'\t' '$1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" { h += $2 }
         $1 == "cache_miss" { m = $2 } END { printf "ccache: %d of %d compiles from the cache\n", h, h + m }' \
@@ -101,4 +117,9 @@ fi
 # -rfEp: the failed, errored and passed ids (junit.xml: each failure's message), so the CLI can say which standing
 # failure passed.
 .venv/bin/python -m pytest -q -p no:cacheprovider -n "$WORKERS" -rfEp --junitxml=/out/junit.xml "$@" > /out/pytest.log 2>&1 || true
+# Under xdist a path that names no file collects nothing, and says only this.
+# (Before the summary: with nothing to show, its grep ends the script.)
+if grep -q 'no tests ran' /out/pytest.log; then
+    echo "no tests ran: check the test paths ($*) name files in the tree" >&2
+fi
 grep -E '^FAILED|^ERROR|[0-9]+ (passed|failed)' /out/pytest.log | tail -40

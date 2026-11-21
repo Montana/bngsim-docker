@@ -136,12 +136,40 @@ def test_the_script_commits_the_tracked_files_before_the_build():
     assert "if [ -f .bngsim-docker-tracked ]; then" in script  # no checkout: no git init
 
 
-def test_on_arm64_bngsim_installs_without_antimony():
-    # antimony has no Linux aarch64 wheel: without this, uv sync fails there.
+def test_on_arm64_uv_sync_leaves_antimony_out_and_the_image_s_wheel_goes_in():
+    # antimony has no Linux aarch64 wheel: without the skip, uv sync fails there.
     script = (ROOT / "scripts" / "container-test.sh").read_text(encoding="utf-8")
     assert '[ "$(uname -m)" = aarch64 ]' in script and "--no-install-package antimony" in script
     # The log is started once, then appended to, so the arm64 note stays in it.
     assert script.index(": > /out/build.log") < script.index('"${SKIP[@]}" >> /out/build.log')
+    # After the sync (which would remove it again), the wheel the image built.
+    install = script.index('uv pip install --python .venv/bin/python --no-deps "$wheel"')
+    assert script.index('"${SKIP[@]}" >> /out/build.log') < install < script.index("-m pytest")
+    assert "wheels=(/opt/antimony/antimony-*.whl)" in script
+
+
+def _arg_in(text, name):
+    m = re.search(rf"^ARG {name}=(\S+)$", text, re.M)
+    assert m, name
+    return m.group(1)
+
+
+def test_the_debian_image_builds_antimony_on_arm64_at_the_version_bngsim_locks():
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _arg_in(BASE, "ANTIMONY_VERSION"))
+    assert 'if [ "$TARGETARCH" = arm64 ]; then bash /usr/local/bin/build-antimony.sh "$ANTIMONY_VERSION" /opt/antimony; fi' in BASE
+    # Before the scripts are copied in, so a change to bngsim-test does not rebuild antimony.
+    assert BASE.index("build-antimony.sh \"$ANTIMONY_VERSION\"") < BASE.index("COPY --from=scripts --chmod=0755")
+    for package in ("libexpat1-dev", "zlib1g-dev"):
+        assert re.search(rf"^\s+{package} \\$", BASE, re.M), package
+
+
+def test_build_antimony_pins_its_dependencies_by_commit():
+    script = (ROOT / "scripts" / "build-antimony.sh").read_text(encoding="utf-8")
+    assert re.search(r"^LIBSBML_COMMIT=[0-9a-f]{40}$", script, re.M)
+    assert re.search(r"^SBMLNETWORK_COMMIT=[0-9a-f]{40}$", script, re.M)
+    assert '"refs/tags/v$VERSION"' in script and "set -euo pipefail" in script
+    # Debian's libSBML has no C++ namespace, which SBMLNetwork and antimony need.
+    assert "-DWITH_CPP_NAMESPACE=ON" in script and "-DENABLE_COMP=ON" in script
 
 
 @pytest.mark.parametrize("name", ["Dockerfile", "Dockerfile.ubuntu", "Dockerfile.bionetgen", "Dockerfile.bngsim"])
@@ -164,10 +192,12 @@ def test_the_bngsim_image_pins_bngsim_python_and_bionetgen_as_the_others_do():
 
 
 def test_the_bngsim_image_installs_the_release_it_names_and_checks_it():
-    assert "bngsim[${extras}]==${BNGSIM_VERSION}" in RUN_IMAGE
     assert "bngsim.__version__ == '${BNGSIM_VERSION}'" in RUN_IMAGE
-    # No antimony wheel for Linux aarch64: only amd64 asks for it.
-    assert 'if [ "$TARGETARCH" != arm64 ]; then extras="${extras},antimony"; fi' in RUN_IMAGE
+    # Antimony on both: PyPI's on amd64, built from source on arm64, the same version.
+    assert '"bngsim[pandas,xarray,hdf5,antimony]==${BNGSIM_VERSION}" "antimony==${ANTIMONY_VERSION}"' in RUN_IMAGE
+    assert "--find-links /wheels --wheel-dir /wheels" in RUN_IMAGE
+    assert 'if [ "$TARGETARCH" = arm64 ]; then bash /usr/local/bin/build-antimony.sh "$ANTIMONY_VERSION" /wheels; fi' in RUN_IMAGE
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _arg_in(RUN_IMAGE, "ANTIMONY_VERSION"))
 
 
 @pytest.mark.parametrize("package", ["perl", "libexpat1", "gcc"])
@@ -217,3 +247,12 @@ def test_the_binder_branch_is_moved_only_by_the_jupyter_image_s_digest():
     assert 'pinned="FROM montanamendy/bngsim:jupyter@${digest}"' in job
     assert "already serves" in job and "git push -q --force origin binder" in job
     assert "contents: write" in job
+
+
+def test_a_run_that_collects_nothing_says_so():
+    # Under xdist, a path naming no file gives no error, only "no tests ran".
+    script = (ROOT / "scripts" / "container-test.sh").read_text(encoding="utf-8")
+    assert "if grep -q 'no tests ran' /out/pytest.log; then" in script
+    assert script.index("-m pytest") < script.index("no tests ran: check the test paths")
+    # Before the summary's grep, which finds nothing then and, under pipefail, ends the script.
+    assert script.index("no tests ran: check the test paths") < script.index("grep -E '^FAILED|^ERROR")

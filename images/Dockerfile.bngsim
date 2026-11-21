@@ -4,10 +4,10 @@
 #
 #   docker run --rm -v "$PWD":/work montanamendy/bngsim python model_script.py
 #
-# amd64 installs PyPI's manylinux wheel, with antimony. arm64 has no bngsim or
-# antimony wheel on PyPI: bngsim is built here from its sdist (with KLU), in a
-# stage of its own, so the image carries no build tools; Antimony models are
-# not supported there.
+# amd64 installs PyPI's manylinux wheels. arm64 has no bngsim or antimony
+# wheel on PyPI: bngsim is built here from its sdist (with KLU), and antimony
+# from its source (scripts/build-antimony.sh), in a stage of their own, so the
+# image carries no build tools. Both architectures load Antimony models.
 #
 #   python bngsim_docker.py build --kind bngsim                # bngsim-run:latest
 #   python bngsim_docker.py build --kind bngsim --arch arm64   # bngsim-run-arm64:latest
@@ -17,22 +17,30 @@ ARG PYTHON_VERSION=3.12.16
 FROM python:${PYTHON_VERSION}-slim-bookworm AS wheels
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG BNGSIM_VERSION=0.17.2
+ARG ANTIMONY_VERSION=3.3.0
 ARG BNG_VERSION=2.9.3
 # sha256 of BioNetGen-2.9.3-linux.tar.gz, the RuleWorld/bionetgen release asset.
 ARG BNG_SHA256=b85743d422aa3fd112aceb3725dd1b1f2ff1ad829d20d71682680426582bcb5d
 ARG TARGETARCH
 
-# arm64 builds bngsim from source: a compiler, CMake, Ninja and KLU.
+# arm64 builds bngsim and antimony from source: a compiler, CMake, Ninja, KLU,
+# and the expat and zlib antimony links.
 RUN if [ "$TARGETARCH" = arm64 ]; then \
         apt-get update \
         && apt-get install -y --no-install-recommends build-essential cmake ninja-build libsuitesparse-dev git \
+           libexpat1-dev zlib1g-dev \
         && rm -rf /var/lib/apt/lists/*; \
     fi
 
-RUN extras="pandas,xarray,hdf5"; \
-    if [ "$TARGETARCH" != arm64 ]; then extras="${extras},antimony"; fi; \
-    echo "bngsim[${extras}]==${BNGSIM_VERSION}" > /requirement.txt \
-    && CMAKE_BUILD_PARALLEL_LEVEL=2 pip wheel --no-cache-dir --wheel-dir /wheels -r /requirement.txt
+# hadolint ignore=DL3022
+RUN --mount=type=bind,from=scripts,source=build-antimony.sh,target=/usr/local/bin/build-antimony.sh \
+    mkdir -p /wheels \
+    && if [ "$TARGETARCH" = arm64 ]; then bash /usr/local/bin/build-antimony.sh "$ANTIMONY_VERSION" /wheels; fi
+
+# The same antimony on both architectures: PyPI's on amd64, the one built above
+# on arm64 (found in /wheels).
+RUN printf '%s\n' "bngsim[pandas,xarray,hdf5,antimony]==${BNGSIM_VERSION}" "antimony==${ANTIMONY_VERSION}" > /requirement.txt \
+    && CMAKE_BUILD_PARALLEL_LEVEL=2 pip wheel --no-cache-dir --find-links /wheels --wheel-dir /wheels -r /requirement.txt
 
 # BioNetGen, checked against its sha256. BNG2.pl is Perl and runs on either
 # architecture; it is what turns a .bngl file into a network for bngsim.
@@ -95,6 +103,8 @@ COPY examples /examples
 # the image is older than its Dockerfile. Last, so no other layer depends on
 # it.
 COPY Dockerfile.bngsim /etc/bngsim-docker/Dockerfile.bngsim
+# hadolint ignore=DL3022
+COPY --from=scripts build-antimony.sh /etc/bngsim-docker/build-antimony.sh
 WORKDIR /work
 CMD ["python"]
 

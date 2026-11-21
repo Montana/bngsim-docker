@@ -2,8 +2,9 @@
 
 A BNGL model goes through BNG2.pl; its ODE run is checked against the exact
 solution A0 exp(-k t), and an SSA run against a fixed seed's repeatability. An
-SBML model is checked against the same solution; an Antimony model loads where
-antimony is installed (amd64). Exit status 1 on the first that fails."""
+SBML model and an Antimony model are checked against the same solution, on
+either architecture (arm64's antimony is built from source in the image). Exit
+status 1 on the first that fails."""
 
 from __future__ import annotations
 
@@ -48,13 +49,10 @@ b = species(sbml, "A")
 assert all(abs(x - y) <= 1e-4 * y for x, y in zip(b, want)), (list(b), want)
 print("SBML: matches A0 exp(-k t)")
 
-if importlib.util.find_spec("antimony"):
-    ant = bngsim.Model.from_antimony_string("J0: A -> ; k*A; A = 100; k = 0.5")
-    c = species(bngsim.Simulator(ant, method="ode").run(t_span=(0.0, 4.0), n_points=5), "A")
-    assert all(abs(x - y) <= 1e-4 * y for x, y in zip(c, want)), (list(c), want)
-    print("Antimony: matches A0 exp(-k t)")
-elif platform.machine() in ("x86_64", "AMD64"):
-    sys.exit("antimony is missing on x86-64, where the image installs it")
-else:
-    print("Antimony: not on this architecture (no Linux aarch64 wheel)")
+if not importlib.util.find_spec("antimony"):
+    sys.exit(f"antimony is missing on {platform.machine()}, where the image installs it")
+ant = bngsim.Model.from_antimony_string("J0: A -> ; k*A; A = 100; k = 0.5")
+c = species(bngsim.Simulator(ant, method="ode").run(t_span=(0.0, 4.0), n_points=5), "A")
+assert all(abs(x - y) <= 1e-4 * y for x, y in zip(c, want)), (list(c), want)
+print("Antimony: matches A0 exp(-k t)")
 print("all checks passed")

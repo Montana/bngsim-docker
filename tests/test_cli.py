@@ -191,9 +191,10 @@ def _digest(name):
 
 
 def _scripts():
-    """The stamp lines of the scripts the test images carry, as built from this repository."""
+    """The stamp lines of the scripts the images carry, as built from this repository."""
     import hashlib
-    return "".join(f"{hashlib.sha256((bd.SCRIPTS / n).read_bytes()).hexdigest()}  {n}\n" for n in bd.IN_IMAGE_SCRIPTS)
+    return "".join(f"{hashlib.sha256((bd.SCRIPTS / n).read_bytes()).hexdigest()}  {n}\n"
+                   for n in (*bd.IN_IMAGE_SCRIPTS, bd.ANTIMONY_SCRIPT))
 
 
 def _stale(monkeypatch, kind, stdout):
@@ -598,10 +599,21 @@ def test_an_image_built_before_a_script_changed_is_named(monkeypatch):
     assert len(warnings) == 1 and "older scripts/bngsim-test" in warnings[0]
 
 
-def test_the_test_images_are_given_the_scripts_and_the_bngsim_image_is_not():
-    (debian,) = bd.build_commands("amd64", "debian")
-    assert debian[debian.index("--build-context") + 1] == f"scripts={bd.SCRIPTS}"
+def test_every_image_but_bionetgen_s_is_given_the_scripts():
+    """The test images carry bngsim-test; the Debian and bngsim images build antimony with
+    build-antimony.sh on arm64."""
+    for kind in ("debian", "ubuntu", "bngsim", "bngsim-jupyter"):
+        (cmd,) = bd.build_commands("arm64" if kind != "ubuntu" else "amd64", kind)
+        assert cmd[cmd.index("--build-context") + 1] == f"scripts={bd.SCRIPTS}", kind
     base, bng = bd.build_commands("amd64", "bionetgen")
     assert "--build-context" in base and "--build-context" not in bng  # BioNetGen's inherits them
-    (run,) = bd.build_commands("amd64", "bngsim")
-    assert "--build-context" not in run
+
+
+def test_a_change_to_build_antimony_makes_the_debian_and_bngsim_images_stale(monkeypatch):
+    old = _scripts().replace(_scripts().splitlines()[-1].split("  ")[0], "0" * 64, 1)
+    warnings, _ = _stale(monkeypatch, "debian", f"{_digest('Dockerfile')}  Dockerfile\n" + old)
+    assert len(warnings) == 1 and "older scripts/build-antimony.sh" in warnings[0]
+    warnings, _ = _stale(monkeypatch, "bngsim", f"{_digest('Dockerfile.bngsim')}  Dockerfile.bngsim\n" + old)
+    assert len(warnings) == 1 and "older scripts/build-antimony.sh" in warnings[0]
+    # Ubuntu's image is amd64 only, and carries no copy.
+    assert _stale(monkeypatch, "ubuntu", f"{_digest('Dockerfile.ubuntu')}  Dockerfile.ubuntu\n" + old)[0] == []

@@ -8,7 +8,9 @@
 # Everything is pinned to the versions the checks were first run with, so a
 # rebuild gives the same compiler and the same libm:
 #   Debian 12 (bookworm), Python 3.12.16, gcc 12.2, CMake 3.25, Ninja 1.11,
-#   SuiteSparse 5.12 (KLU), ccache, uv 0.12.18.
+#   SuiteSparse 5.12 (KLU), ccache, uv 0.12.18, and on arm64 antimony 3.2.1
+#   (the version bngsim's uv.lock pins), built from source: PyPI has no Linux
+#   aarch64 wheel for it.
 #
 #   docker build --platform linux/amd64 -t bngsim-linux-amd64:latest -f images/Dockerfile images
 #   docker build --platform linux/arm64 -t bngsim-linux-arm64:latest -f images/Dockerfile images
@@ -16,6 +18,8 @@ ARG PYTHON_VERSION=3.12.16
 FROM python:${PYTHON_VERSION}-bookworm
 
 ARG UV_VERSION=0.12.18
+ARG ANTIMONY_VERSION=3.2.1
+ARG TARGETARCH
 
 # build-essential: gcc/g++ 12 for the core and for codegen's cc backend.
 # libsuitesparse-dev: KLU, so the sparse linear solver is built (BNGSIM_ENABLE_KLU).
@@ -29,9 +33,19 @@ RUN apt-get update \
         ccache \
         cmake \
         git \
+        libexpat1-dev \
         libsuitesparse-dev \
         ninja-build \
+        zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# antimony, on arm64: its wheel, built from source (scripts/build-antimony.sh,
+# about a minute), for container-test.sh to install after uv sync, so the
+# tests that load Antimony models run there too. libexpat1-dev and zlib1g-dev
+# are what it links.
+# hadolint ignore=DL3022
+RUN --mount=type=bind,from=scripts,source=build-antimony.sh,target=/usr/local/bin/build-antimony.sh \
+    if [ "$TARGETARCH" = arm64 ]; then bash /usr/local/bin/build-antimony.sh "$ANTIMONY_VERSION" /opt/antimony; fi
 
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 
@@ -58,7 +72,7 @@ LABEL org.opencontainers.image.source="https://github.com/Montana/bngsim-docker"
 # hadolint ignore=DL3022
 COPY --from=scripts --chmod=0755 bngsim-test container-test.sh /usr/local/bin/
 # hadolint ignore=DL3022
-COPY --from=scripts bngsim-test container-test.sh /etc/bngsim-docker/
+COPY --from=scripts bngsim-test container-test.sh build-antimony.sh /etc/bngsim-docker/
 COPY Dockerfile /etc/bngsim-docker/Dockerfile
 WORKDIR /src
 CMD ["bash"]

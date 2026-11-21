@@ -33,8 +33,7 @@ def test_every_format_loads_and_matches_the_exact_solution():
     r = run("python", "/check/smoke.py")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "all checks passed" in r.stdout
-    if ARCH == "amd64":
-        assert "Antimony: matches" in r.stdout
+    assert "Antimony: matches" in r.stdout  # both architectures: arm64's is built in the image
 
 
 def test_bngpath_names_bionetgen_and_perl_runs_it():

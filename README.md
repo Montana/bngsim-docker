@@ -56,9 +56,9 @@ docker run --rm -p 8888:8888 -v "$PWD":/work montanamendy/bngsim:jupyter
 
 then open the `http://127.0.0.1:8888/lab?token=...` address it prints. JupyterLab opens in your folder (`/work`); `examples/tour.ipynb`, one level up, simulates the ligand-receptor model, plots ODE against stochastic runs, and checks the results against exact answers. On Linux, add `--user "$(id -u):$(id -g)"`, as above. The token stays on: anyone who can reach the port could otherwise run code.
 
-On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Linux: the image builds bngsim from its source release, and Antimony models are not supported there. Everything else is the same.
+On arm64 (Apple Silicon, Graviton), PyPI has no bngsim or antimony wheel for Linux: the image builds both from source ([`scripts/build-antimony.sh`](scripts/build-antimony.sh) for antimony, as antimony's own CI builds it), so the image is the same on either architecture, Antimony models included.
 
-Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and (amd64) an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed; a user other than root compiles a model, and the examples agree with their exact answers ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
+Each image is checked before it is published: a BNGL model through BNG2.pl, an SBML model and an Antimony model are simulated and compared with the exact solution, and an SSA run with its seed; a user other than root compiles a model, and the examples agree with their exact answers ([`tests/test_bngsim_image.py`](tests/test_bngsim_image.py)). The publish job builds the newest bngsim release on PyPI, weekly, so a new release arrives within a week. Build it locally with `python bngsim_docker.py build --kind bngsim` (`--bngsim-version` for another release).
 
 ## For teachers
 
@@ -139,7 +139,7 @@ The versions are read from the built images; `tests/test_container.py` checks th
 | Is a ulp-sensitive solver change the same on Linux? | `test --tree . --kind ubuntu` (CI's libm), then `--kind debian` for a second glibc |
 | Is this failure mine or main's? | `compare --tree . --main ~/work/bngsim-main` |
 | Do the BNG2.pl / NFsim parity tests pass? | `test --tree . --kind bionetgen` |
-| Does it pass on 64-bit Arm Linux? | `test --tree . --arch arm64` (native speed on Apple Silicon; installs without antimony, which has no Linux aarch64 wheel, so for builds and targeted tests, not the whole suite) |
+| Does it pass on 64-bit Arm Linux? | `test --tree . --arch arm64` (native speed on Apple Silicon; antimony, which has no Linux aarch64 wheel, is built from source in the image, so the whole suite runs) |
 | I want to poke at the build by hand | `shell --tree .` |
 
 ## Quick start
@@ -336,7 +336,7 @@ The CLI and Compose use the same names, so they fill the same cache. The images'
 
 ## Failures that are the container's
 
-**On arm64**, bngsim is installed without antimony (it ships no Linux aarch64 wheel), so every test that loads an Antimony model fails there. `test` reads each failure's message from pytest's JUnit XML and, on an arm64 image only, reports a failure whose error is antimony missing as `needs antimony`, not as the tree's (and `compare` does not rerun it on main, where it would fail alike); a test that fails for any other reason still counts. For a verdict on those tests, use an amd64 image.
+**On arm64**, antimony has no Linux aarch64 wheel, so the Debian image builds it from source ([`scripts/build-antimony.sh`](scripts/build-antimony.sh), at the version bngsim's `uv.lock` pins) and installs it after `uv sync`; `build.log` says so (`arm64: antimony 3.2.1, built from source in the image`). An arm64 image built before that has no antimony, and every test that loads an Antimony model fails in it: `test` reads each failure's message from pytest's JUnit XML and, on an arm64 image only, reports a failure whose error is antimony missing as `needs antimony`, not as the tree's (and `compare` does not rerun it on main, where it would fail alike); a test that fails for any other reason still counts. Rebuild the image to run those tests.
 
 A handful of tests fail in these containers on bngsim's main too. [`known-failures.txt`](known-failures.txt) lists them, each with its reason, so a red `test` run says at once whether it is the tree:
 
@@ -368,8 +368,9 @@ In an image it does not name, its failure is the tree's. `test` also says when a
 | `PermissionError` deleting the scratch copy (Linux host) | the container runs as root, so the `.venv` it built is root's | fixed: the CLI passes `HOST_UID`/`HOST_GID` and the script hands its files back; with Compose, pass them yourself |
 | `no bngsim tree at /tree (set BNGSIM_TREE)` | Compose run without `BNGSIM_TREE` | `BNGSIM_TREE=~/work/bngsim docker compose run --rm suite` |
 | `no pytest summary (see build.log)` | the build failed before pytest started | read `--out/build.log`; its last 50 lines are printed too |
-| `arm64: installing without antimony` in `build.log` | antimony has no Linux aarch64 wheel, so `uv sync` of bngsim's `test` extra cannot install it | expected: the tests that need antimony skip or fail on arm64; run the suite on an amd64 image |
-| The amd64 run is very slow on a Mac | x86-64 is emulated on Apple Silicon | let the cache warm (see above), or use `--arch arm64` for a build or tests that need no antimony |
+| `arm64: installing without antimony` in `build.log` | the arm64 image predates its antimony build (antimony has no Linux aarch64 wheel) | rebuild it: `python bngsim_docker.py build --arch arm64`, or pull `montanamendy/bngsim-linux:test` again |
+| `uv.lock pins X` after `arm64: antimony Y` in `build.log` | the tree's lock moved to another antimony than the image built | usually harmless (antimony's API is stable); for an exact match, set `ARG ANTIMONY_VERSION` in `images/Dockerfile` to X and rebuild |
+| The amd64 run is very slow on a Mac | x86-64 is emulated on Apple Silicon | let the cache warm (see above), or use `--arch arm64`, which runs the same suite natively |
 | The run fails with "exec format error" | the image was built for another platform | build with the same `--arch` you run with |
 
 ## What is in the repository

@@ -93,6 +93,7 @@ ROOT = Path(__file__).resolve().parent
 IMAGES = ROOT / "images"
 SCRIPTS = ROOT / "scripts"
 IN_IMAGE_SCRIPTS = ("bngsim-test", "container-test.sh")  # copied into the test images
+ANTIMONY_SCRIPT = "build-antimony.sh"  # builds antimony for arm64 (no Linux aarch64 wheel on PyPI)
 KNOWN = ROOT / "known-failures.txt"
 EXCLUDE = (".venv", "build", ".git", "*.log", "__pycache__", ".pytest_cache", ".mutate-backup", "*.so")
 KINDS = ("debian", "ubuntu", "bionetgen", "bngsim", "bngsim-jupyter")
@@ -135,8 +136,9 @@ def build_commands(arch: str, kind: str, fresh: bool = False,
 
     def build(k: str, *extra: str) -> list[str]:
         new = (["--no-cache"] if k == "bionetgen" else ["--pull", "--no-cache"]) if fresh else []
-        # The test images carry the repository's scripts (bngsim-test, container-test.sh).
-        scripts = ["--build-context", f"scripts={SCRIPTS}"] if k in ("debian", "ubuntu") else []
+        # The test images carry the repository's scripts (bngsim-test, container-test.sh),
+        # and the Debian and bngsim images build antimony with one on arm64.
+        scripts = ["--build-context", f"scripts={SCRIPTS}"] if k != "bionetgen" else []
         return ["docker", "build", "--platform", f"linux/{arch}", "-t", image_name(arch, k),
                 "-f", str(IMAGES / DOCKERFILE[k]), *scripts, *new, *extra, str(IMAGES)]
 
@@ -220,8 +222,9 @@ def junit_messages(path: Path) -> dict[tuple[str, str], str]:
     return out
 
 
-# The arm64 images install bngsim without antimony (no Linux aarch64 wheel): a
-# test whose only failure is that antimony is missing is the image's, there.
+# arm64 images built before antimony was built from source in them install
+# bngsim without it (PyPI has no Linux aarch64 wheel): a test whose only failure
+# is that antimony is missing is the image's, there.
 NO_ANTIMONY = re.compile(r"The 'antimony' package is required|No module named 'antimony'")
 
 
@@ -355,14 +358,19 @@ def restart_docker_desktop(*, dry: bool) -> None:
 
 def stamp_names(kind: str) -> list[str]:
     """The files an image is built from, whose copies it keeps: its Dockerfile
-    (BioNetGen's is built on the Debian one), and the scripts the test images carry."""
+    (BioNetGen's is built on the Debian one), the scripts the test images carry,
+    and the script that builds antimony on arm64 (the Debian and bngsim images)."""
     if kind == "bionetgen":
-        return ["Dockerfile", "Dockerfile.bionetgen", *IN_IMAGE_SCRIPTS]
-    return [DOCKERFILE[kind], *IN_IMAGE_SCRIPTS] if kind in TESTING else [DOCKERFILE[kind]]
+        return ["Dockerfile", "Dockerfile.bionetgen", *IN_IMAGE_SCRIPTS, ANTIMONY_SCRIPT]
+    if kind == "ubuntu":
+        return [DOCKERFILE[kind], *IN_IMAGE_SCRIPTS]
+    if kind in TESTING:
+        return [DOCKERFILE[kind], *IN_IMAGE_SCRIPTS, ANTIMONY_SCRIPT]
+    return [DOCKERFILE[kind], ANTIMONY_SCRIPT]
 
 
 def stamp_source(name: str) -> Path:
-    return SCRIPTS / name if name in IN_IMAGE_SCRIPTS else IMAGES / name
+    return SCRIPTS / name if name in (*IN_IMAGE_SCRIPTS, ANTIMONY_SCRIPT) else IMAGES / name
 
 
 def stale_image(image: str, arch: str, kind: str, *, dry: bool) -> list[str]:
