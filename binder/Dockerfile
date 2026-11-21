@@ -7,7 +7,7 @@
 # Binder runs the server itself, as an ordinary user with uid 1000 and through
 # jupyterhub-singleuser; the examples are copied into that user's home, so the
 # file browser opens on them and a student's edits can be saved.
-FROM montanamendy/bngsim:jupyter
+FROM montanamendy/bngsim:jupyter@sha256:738f69d2d666928b7856931b5944337db1ba1fcd960e209fcb773c223a44f9cd
 
 # The image runs as its own user (bngsim); installing and adding Binder's user
 # need root, and the last line hands the server to Binder's user.
